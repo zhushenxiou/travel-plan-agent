@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from core.agent import Agent
 from infrastructure.llm.openai import OpenAILLM
 from domain.shared.runtime.logging import init_from_settings
-from core.prompting import PromptBuilder
+from domain.reasoning.prompting import PromptBuilder
 from infrastructure.tools.adapters.interaction import get_interaction_handlers, get_interaction_specs
-from core.session import SessionManager
+from domain.user.session.manager import SessionManager
 from infrastructure.tools.executor import ToolExecutor
 from infrastructure.tools.adapters.http import get_http_handlers, get_http_specs
 from domain.travel.tools.travel_tools import get_travel_handlers, get_travel_specs
@@ -19,21 +18,21 @@ from infrastructure.tools.catalog import ToolCatalog
 from infrastructure.tools.base import bind_tool
 from infrastructure.external.mcp.catalog import MCPCatalog
 from infrastructure.external.mcp.runtime import MCPProxyRuntime
-from core.intent.travel_classifier import TravelIntentClassifier
-from core.emotion.detector import EmotionDetector
-from core.profile.manager import ProfileManager
-from core.audit.logger import AuditLogger
-from core.metrics.collector import start_metrics_server
+from domain.travel.intent.travel_classifier import TravelIntentClassifier
+from domain.user.emotion.detector import EmotionDetector
+from domain.user.profile.manager import ProfileManager
+from domain.shared.audit.logger import AuditLogger
+from domain.shared.metrics.collector import start_metrics_server
 from infrastructure.persistence.database import init_db
 
 from domain.agent.travel_core import Agent
 from domain.agent.schema import AgentConfig
-from core.agents.builtin_loader import BuiltinAgentLoader  # TODO: 后续迁移到application层
+from application.builtin_agents.loader import BuiltinAgentLoader
 from domain.agent.repository import CustomAgentRepository
 from domain.agent.factory import AgentFactory
 from domain.agent.orchestrator import OrchestratorAgent
 from domain.agent.travel_agent import TravelAgent
-from core.skills.provider import FileSkillProvider, SkillProvider
+from infrastructure.skills.provider import FileSkillProvider, SkillProvider
 
 
 @dataclass
@@ -62,7 +61,7 @@ def _build_travel_agent_core(llm: OpenAILLM, audit_logger: AuditLogger) -> Agent
     tool_catalog = ToolCatalog()
     tool_registry = ToolRegistry()
     tool_policy = ToolPolicy()
-    mcp_catalog = MCPCatalog(Path(__file__).resolve().parents[0] / "mcps")
+    mcp_catalog = MCPCatalog(Path(__file__).resolve().parents[0] / "infrastructure" / "external" / "mcp" / "servers")
     mcp_runtime = MCPProxyRuntime(catalog=mcp_catalog)
 
     travel_classifier = TravelIntentClassifier(llm=llm)
@@ -121,12 +120,12 @@ def build_orchestrator() -> AppContainer:
 
     # ===== Skill 提供者（抽象接口，可替换实现） =====
     skill_provider = FileSkillProvider(
-        skills_dir=Path(__file__).resolve().parents[0] / "skills"
+        skills_dir=Path(__file__).resolve().parents[0] / "infrastructure" / "skills" / "builtin"
     )
 
     # ===== 内置智能体配置（从 YAML 加载，零硬编码） =====
     builtin_loader = BuiltinAgentLoader(
-        builtin_dir=Path(__file__).resolve().parents[0] / "agents" / "builtin"
+        builtin_dir=Path(__file__).resolve().parents[0] / "application" / "builtin_agents"
     )
     builtin_configs = builtin_loader.load_all()
 

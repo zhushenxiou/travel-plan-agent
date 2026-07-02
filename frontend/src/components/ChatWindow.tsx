@@ -1,9 +1,8 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Message, ThinkingStep } from '../hooks/useChatStore'
 import { useSessionStore } from '../hooks/useSessionStore'
-import { Bot, User, AlertTriangle, MapPin, TrendingUp, RefreshCw, Eye, ThumbsUp, Map, Loader2, Check } from 'lucide-react'
-import { getTrending, TrendingItem } from '../utils/api'
+import { User, AlertTriangle, MapPin, Sparkles, Eye, ThumbsUp, Map, Loader2, Check } from 'lucide-react'
 import { AgentActivationBanner } from './AgentActivationBanner'
 import { AgentActionCard } from './AgentActionCard'
 
@@ -201,125 +200,33 @@ function Avatar({ role }: { role: 'user' | 'assistant' }) {
 }
 
 function WelcomeScreen({ onQuickSend }: { onQuickSend?: (text: string) => void }) {
-  const [items, setItems] = useState<TrendingItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-
-  const fetchTrending = async (isRefresh: boolean = false) => {
-    if (isRefresh) {
-      setRefreshing(true)
-    } else {
-      setLoading(true)
-    }
-    const data = await getTrending(isRefresh)
-    setItems(data)
-    setLoading(false)
-    setRefreshing(false)
-  }
-
-  useEffect(() => {
-    fetchTrending()
-  }, [])
-
-  const handleClick = (item: TrendingItem) => {
-    if (onQuickSend) {
-      const contentPart = item.content
-        ? `\n\n资讯详情：${item.content}`
-        : `\n\n简介：${item.summary}`
-      onQuickSend(`我看到了一条旅游资讯：${item.title}${contentPart}\n\n请帮我分析一下这个目的地，介绍一下特色和旅行建议`)
-    }
-  }
-
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center mb-6 shadow-lg shadow-sky-200">
-        <MapPin size={32} className="text-white" />
+        <Sparkles size={32} className="text-white" />
       </div>
       <h2
         className="text-2xl font-bold text-slate-800 mb-2"
         style={{ fontFamily: 'var(--font-display)' }}
       >
-        Claw 旅行规划师
+        Claw 智能助手
       </h2>
-      <p className="text-slate-500 text-sm max-w-md mb-6">
-        告诉我你想去哪里，我来帮你搜索机票酒店、规划行程、推荐美食。
-        你的专属AI旅行助手，让每一次出发都轻松无忧。
+      <p className="text-slate-500 text-sm max-w-md mb-8">
+        我是你的通用 AI 助手，可以自由对话、回答问题。
+        也可以在 Agent 中心选择专业智能体来处理特定任务。
       </p>
 
       <div className="w-full max-w-md">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-1.5 text-sm font-medium text-slate-600">
-            <TrendingUp size={14} className="text-orange-500" />
-            旅游热点资讯
-          </div>
-          <button
-            onClick={() => fetchTrending(true)}
-            disabled={refreshing}
-            className="flex items-center gap-1 text-xs text-slate-400 hover:text-sky-500 transition-colors"
-          >
-            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-            换一批
-          </button>
+        <div className="grid grid-cols-2 gap-3">
+          {[
+            '你好，你是谁？',
+            '帮我写一首关于春天的诗',
+            '解释一下什么是机器学习',
+            '给我讲个笑话',
+          ].map((text) => (
+            <QuickAction key={text} text={text} onClick={onQuickSend} />
+          ))}
         </div>
-
-        {loading ? (
-          <div className="grid grid-cols-2 gap-2.5">
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="h-24 rounded-xl bg-slate-100 animate-pulse" />
-            ))}
-          </div>
-        ) : items.length > 0 ? (
-          <div className="grid grid-cols-2 gap-2.5">
-            {items.map((item, idx) => (
-              <button
-                key={idx}
-                onClick={() => handleClick(item)}
-                className="text-left relative overflow-hidden rounded-xl border border-slate-200 hover:border-sky-300 transition-all group h-24"
-              >
-                {item.img && (
-                  <img
-                    src={item.img}
-                    alt=""
-                    className="absolute inset-0 w-full h-full object-cover opacity-20 group-hover:opacity-30 transition-opacity"
-                    loading="lazy"
-                  />
-                )}
-                <div className="relative z-10 px-3 py-2.5 h-full flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className="text-[10px] font-medium text-orange-500 bg-orange-50/80 px-1.5 py-0.5 rounded flex-shrink-0">
-                        {item.tag}
-                      </span>
-                      {item.hotChange === 'up' && (
-                        <span className="text-[10px] text-red-400">↑</span>
-                      )}
-                      {item.hotChange === 'down' && (
-                        <span className="text-[10px] text-green-400">↓</span>
-                      )}
-                    </div>
-                    <p className="text-xs font-medium text-slate-700 group-hover:text-sky-600 truncate transition-colors">
-                      {item.title}
-                    </p>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-tight truncate">
-                    {item.summary}
-                  </p>
-                </div>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              '🗺️ 帮我规划云南5日游',
-              '✈️ 查北京到三亚机票',
-              '🏨 三亚海景酒店推荐',
-              '🍜 成都必吃美食攻略',
-            ].map((text) => (
-              <QuickAction key={text} text={text} onClick={onQuickSend} />
-            ))}
-          </div>
-        )}
       </div>
     </div>
   )

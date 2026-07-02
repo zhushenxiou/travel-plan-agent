@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from app import build_agent
 from config import settings
-from core.logging_config import init_from_settings
+from domain.shared.runtime.logging import init_from_settings
 app = typer.Typer(add_completion=False)
 console = Console()
 logger = logging.getLogger(__name__)

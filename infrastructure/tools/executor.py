@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import traceback as traceback_mod
-from tools.policy import ToolPolicy,PolicyMode
-from tools.registry import ToolRegistry
-from core.types import ToolCall
+from infrastructure.tools.policy import ToolPolicy,PolicyMode
+from infrastructure.tools.registry import ToolRegistry
+from domain.shared.types import ToolCall
 
 logger = logging.getLogger(__name__)
 

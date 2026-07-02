@@ -11,13 +11,13 @@ from typing import Any
 from infrastructure.external.mcp.runtime import MCPProxyRuntime
 from infrastructure.tools.executor import ToolExecutor
 from infrastructure.tools.registry import ToolRegistry
-from domain.reasoning.context_manager import ContextManager
+from domain.reasoning.contxt_manager import ContextManager
 from infrastructure.llm.openai import OpenAILLM
 from infrastructure.external.mcp.catalog import MCPCatalog
 from domain.memory.manager import MemoryManager, SessionMemory, DualLayerMemoryManager
-from domain.memory.extractor import MemoryExtractor
-from domain.memory.distiller import MemoryDistiller
-from domain.reasoning.context import PromptContext
+from domain.memory.memory_extractor import MemoryExtractor
+from domain.memory.memory_distiller import MemoryDistiller
+from domain.reasoning.prompt_context import PromptContext
 from domain.reasoning.prompting import PromptBuilder
 from domain.reasoning.engine import AskUserNeeded, ReasoningEngine, ConfirmationNeeded
 from domain.shared.runtime.facts import answer_date_or_time_query, current_datetime_text
@@ -147,7 +147,7 @@ class Agent:
                     raw_llm_output=getattr(ops_result, "raw_output", ""),
                 )
         else:
-            from core.types import IntentResult
+            from domain.shared.types import IntentResult
             intent = IntentResult(
                 intent=IntentType.TASK,
                 goal=message[:100],
@@ -226,7 +226,7 @@ class Agent:
             self._session_store.save(session)
             return {"status": "completed", "reply": reply}
 
-        from core.intent.travel_schema import TravelIntentType
+        from domain.travel.intent.travel_schema import TravelIntentType
         if ops_result and ops_result.intent == TravelIntentType.ITINERARY_CONFIRM:
             logger.info("itinerary_confirm: bypassing LLM, directly calling generate_itinerary_overview")
             reply = await self._direct_generate_itinerary(
@@ -479,7 +479,7 @@ class Agent:
                     raw_llm_output=getattr(ops_result, "raw_output", ""),
                 )
         else:
-            from core.types import IntentResult
+            from domain.shared.types import IntentResult
             intent = IntentResult(
                 intent=IntentType.TASK,
                 goal=message[:100],
@@ -537,7 +537,7 @@ class Agent:
             return
 
         # 行程确认路径
-        from core.intent.travel_schema import TravelIntentType
+        from domain.travel.intent.travel_schema import TravelIntentType
         if ops_result and ops_result.intent == TravelIntentType.ITINERARY_CONFIRM:
             reply = await self._direct_generate_itinerary(
                 session=session, session_id=session_id, user_id=memory_scope, ops_result=ops_result,
@@ -867,7 +867,7 @@ class Agent:
         user_id: str,
         ops_result: Any,
     ) -> str:
-        from tools.travel import _generate_itinerary_overview
+        from domain.travel.tools.travel_tools import _generate_itinerary_overview
 
         itinerary_content = ""
         itinerary_markers = ["第1天", "第一天", "Day 1", "day1", "行程安排", "每日行程", "天：", "日游"]
@@ -957,7 +957,7 @@ class Agent:
         if not ops_result or not hasattr(ops_result, "intent"):
             logger.debug("itinerary_confirm: no ops_result or no intent attr")
             return ""
-        from core.intent.travel_schema import TravelIntentType
+        from domain.travel.intent.travel_schema import TravelIntentType
         if ops_result.intent != TravelIntentType.ITINERARY_CONFIRM:
             logger.debug("itinerary_confirm: intent=%s, not ITINERARY_CONFIRM", ops_result.intent)
             return ""
@@ -1138,7 +1138,7 @@ class Agent:
                     task.cache_tool_result(name, args, content[:4000])
 
     def list_user_sessions(self, user_id: str) -> list[dict]:
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         sessions: list[dict] = []
         try:
             conn = get_connection()
@@ -1178,7 +1178,7 @@ class Agent:
         task = self._task_store.get(session_id, user_id=user_id)
         if task.user_id != user_id:
             return
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         conn.execute("DELETE FROM session_turns WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))

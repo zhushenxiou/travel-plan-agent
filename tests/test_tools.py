@@ -1,13 +1,13 @@
 """Tests for tools layer — base, registry, catalog, policy, executor, interaction"""
 import pytest
 
-from tools.base import ToolSpec, Tool, ToolHandler, bind_tool
-from tools.registry import ToolRegistry
-from tools.catalog import ToolCatalog
-from tools.policy import ToolPolicy, PolicyMode, PolicyDecision
-from tools.executor import ToolExecutor
-from tools.interaction import get_interaction_specs, get_interaction_handlers
-from core.types import ToolCall
+from infrastructure.tools.base import ToolSpec, Tool, ToolHandler, bind_tool
+from infrastructure.tools.registry import ToolRegistry
+from infrastructure.tools.catalog import ToolCatalog
+from infrastructure.tools.policy import ToolPolicy, PolicyMode, PolicyDecision
+from infrastructure.tools.executor import ToolExecutor
+from infrastructure.tools.adapters.interaction import get_interaction_specs, get_interaction_handlers
+from domain.shared.types import ToolCall
 
 
 # ── base.py ──

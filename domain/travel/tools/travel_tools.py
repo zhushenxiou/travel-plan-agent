@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .base import ToolHandler, ToolSpec, bind_tool
+from infrastructure.tools.base import ToolHandler, ToolSpec, bind_tool
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ async def _generate_itinerary_overview(arguments: dict) -> dict:
     end_date = str(arguments.get("end_date", "")).strip()
 
     if not user_id and session_id:
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         row = conn.execute(
             "SELECT user_id FROM tasks WHERE session_id = ?",
@@ -42,7 +42,7 @@ async def _generate_itinerary_overview(arguments: dict) -> dict:
             logger.info("generate_itinerary_overview: user_id resolved from task store: %s", user_id)
 
     if not content and session_id:
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         rows = conn.execute(
             "SELECT role, content FROM session_turns WHERE session_id = ? ORDER BY turn_index DESC",
@@ -65,8 +65,8 @@ async def _generate_itinerary_overview(arguments: dict) -> dict:
     if not content:
         return {"is_error": True, "content": "missing itinerary content: please provide content or session_id"}
 
-    from core.itinerary.parser import ItineraryParser
-    from core.itinerary.repository import ItineraryRepository
+    from domain.travel.itinerary.parser import ItineraryParser
+    from domain.travel.itinerary.repository import ItineraryRepository
 
     parser = ItineraryParser()
     try:

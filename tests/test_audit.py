@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.audit.sanitizer import sanitize, sanitize_dict
-from core.audit.logger import AuditLogger
+from domain.shared.audit.sanitizer import sanitize, sanitize_dict
+from domain.shared.audit.logger import AuditLogger
 
 
 class TestSanitizer:

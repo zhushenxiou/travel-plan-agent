@@ -180,7 +180,7 @@ class DualLayerMemoryManager:
             "ORDER BY last_accessed_at DESC, updated_at DESC",
             (user_id,),
         ).fetchall()
-        from infra.db import _json_loads
+        from infrastructure.persistence.database import _json_loads
         return [
             LongTermMemory(
                 id=row["id"],

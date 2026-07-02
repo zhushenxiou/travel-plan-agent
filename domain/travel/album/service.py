@@ -70,7 +70,7 @@ def _match_day_index(taken_at: str | None, itinerary_id: str) -> int:
     if not taken_at:
         return 0
     try:
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         row = conn.execute(
             "SELECT start_date FROM itineraries WHERE id = ?",
@@ -252,8 +252,8 @@ class AlbumService:
 
     async def generate_travelogue(self, itinerary_id: str) -> str:
         """根据行程安排和照片生成图文游记。"""
-        from infra.db import get_connection
-        from core.llm import OpenAILLM
+        from infrastructure.persistence.database import get_connection
+        from infrastructure.llm.openai import OpenAILLM
 
         conn = get_connection()
         itin_row = conn.execute(

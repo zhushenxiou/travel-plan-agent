@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from core.mcp_catalog import MCPCatalog
-from tools.base import ToolHandler, ToolSpec, bind_tool
+from infrastructure.external.mcp.catalog import MCPCatalog
+from infrastructure.tools.base import ToolHandler, ToolSpec, bind_tool
 
 MCPAdapter = Callable[[dict], Awaitable[dict]]
 _SEARCH_HEADERS = {

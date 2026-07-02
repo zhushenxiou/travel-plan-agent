@@ -12,13 +12,13 @@ interface Props {
 
 /**
  * 会话列表栏 — 只负责会话历史展示与切换。
- * 位于 NavSidebar 右侧、对话区左侧。
+ * 位于对话区右侧。
  * sessions 存在全局 store，Home 卸载重挂载时不会丢失，避免每次返回都白屏重新加载。
  */
 export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [loading, setLoading] = useState(false)
-  const { setSessionId, setUserId, loadMessages, resetSession } = useChatStore()
+  const { setSessionId, loadMessages, resetSession } = useChatStore()
   const sessions = useChatStore((s) => s.sessions)
   const setSessions = useChatStore((s) => s.setSessions)
 
@@ -41,7 +41,6 @@ export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
     try {
       const result = await createSession()
       setSessionId(result.session_id)
-      if (userId) setUserId(userId)
       loadMessages([])
       onSessionChange(result.session_id)
       await fetchSessions()
@@ -56,7 +55,6 @@ export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
   const handleSelectSession = async (session: SessionInfo) => {
     if (session.session_id === activeSessionId) return
     setSessionId(session.session_id)
-    if (userId) setUserId(userId)
     try {
       const msgs = await getSessionMessages(session.session_id)
       loadMessages(msgs)
@@ -82,13 +80,13 @@ export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
 
   if (collapsed) {
     return (
-      <div className="w-12 bg-white border-r border-slate-200 flex flex-col items-center py-4 gap-3 flex-shrink-0">
+      <div className="w-12 bg-white border-l border-slate-200 flex flex-col items-center py-4 gap-3 flex-shrink-0">
         <button
           onClick={() => setCollapsed(false)}
           className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
           title="展开会话列表"
         >
-          <ChevronRight size={18} />
+          <ChevronLeft size={18} />
         </button>
         <button
           onClick={handleNewSession}
@@ -102,7 +100,7 @@ export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
   }
 
   return (
-    <div className="w-64 bg-white border-r border-slate-200 flex flex-col flex-shrink-0">
+    <div className="w-64 bg-white border-l border-slate-200 flex flex-col flex-shrink-0">
       <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
         <span className="text-sm font-semibold text-slate-700">会话历史</span>
         <button
@@ -110,7 +108,7 @@ export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
           className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
           title="收起会话列表"
         >
-          <ChevronLeft size={16} />
+          <ChevronRight size={16} />
         </button>
       </div>
 

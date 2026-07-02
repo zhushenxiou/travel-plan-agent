@@ -1,5 +1,5 @@
 """Tests for core/runtime_facts.py — current_datetime_text, answer_date_or_time_query"""
-from core.runtime_facts import current_datetime_text, answer_date_or_time_query
+from domain.shared.runtime.facts import current_datetime_text, answer_date_or_time_query
 
 
 class TestCurrentDatetimeText:

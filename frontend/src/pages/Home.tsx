@@ -229,10 +229,6 @@ export function Home() {
   return (
     <div className="h-screen flex bg-slate-50">
       <NavSidebar />
-      <SessionSidebar
-        onSessionChange={handleSessionChange}
-        activeSessionId={activeSessionId}
-      />
 
       <div className="flex-1 flex flex-col min-w-0">
         <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-shrink-0">
@@ -272,6 +268,11 @@ export function Home() {
           onStop={handleStop}
         />
       </div>
+
+      <SessionSidebar
+        onSessionChange={handleSessionChange}
+        activeSessionId={activeSessionId}
+      />
     </div>
   )
 }

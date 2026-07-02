@@ -5,9 +5,9 @@ import pytest
 from datetime import datetime
 
 from infrastructure.persistence.database import get_connection, reset_connection, init_db
-from core.itinerary.schema import Itinerary, DayPlan, Activity
-from core.itinerary.repository import ItineraryRepository
-from core.itinerary.parser import ItineraryParser
+from domain.travel.itinerary.schema import Itinerary, DayPlan, Activity
+from domain.travel.itinerary.repository import ItineraryRepository
+from domain.travel.itinerary.parser import ItineraryParser
 
 
 @pytest.fixture(autouse=True)

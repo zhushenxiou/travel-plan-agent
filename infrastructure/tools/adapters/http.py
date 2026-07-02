@@ -1,7 +1,7 @@
 from __future__ import annotations
 import httpx
 from config import settings
-from tools.base import ToolHandler, ToolSpec, bind_tool
+from infrastructure.tools.base import ToolHandler, ToolSpec, bind_tool
 
 async def _fetch_url(arguments: dict) -> dict:
     if not settings.allow_http:

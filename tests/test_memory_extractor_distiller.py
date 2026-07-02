@@ -2,8 +2,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from core.memory_extractor import MemoryExtractor, ExtractedMemory
-from core.memory_distiller import MemoryDistiller
+from domain.memory.memory_extractor import MemoryExtractor, ExtractedMemory
+from domain.memory.memory_distiller import MemoryDistiller
 from infrastructure.persistence.database import init_db, reset_connection, _json_dumps
 
 
@@ -131,7 +131,7 @@ class TestMemoryExtractor:
         assert result[0].experience_tag == ""
 
     def test_save_extracted(self, extractor):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         conn.execute(
             "INSERT INTO conversations (session_id, user_id, summary, created_at) VALUES (?, ?, ?, datetime('now'))",
@@ -152,7 +152,7 @@ class TestMemoryExtractor:
         assert row["cnt"] == 2
 
     def test_save_extracted_dedup(self, extractor):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         conn.execute(
             "INSERT INTO conversations (session_id, user_id, summary, created_at) VALUES (?, ?, ?, datetime('now'))",
@@ -194,7 +194,7 @@ class TestMemoryDistiller:
         return MemoryDistiller(mock_llm)
 
     def _seed_data_for_distillation(self, user_id="u1"):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime
         conn = get_connection()
         now = datetime.utcnow().isoformat()
@@ -237,7 +237,7 @@ class TestMemoryDistiller:
         assert candidates[0]["content"] == "喜欢吃辣"
 
     def test_find_candidates_no_match(self, distiller):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime
         conn = get_connection()
         now = datetime.utcnow().isoformat()
@@ -254,7 +254,7 @@ class TestMemoryDistiller:
         assert len(candidates) == 0
 
     def test_run_distillation(self, distiller):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         self._seed_data_for_distillation("u1")
 
         count = distiller.run_distillation("u1")
@@ -274,7 +274,7 @@ class TestMemoryDistiller:
         assert stm is None
 
     def test_run_distillation_dedup_ltm(self, distiller):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime
         conn = get_connection()
         now = datetime.utcnow().isoformat()
@@ -304,7 +304,7 @@ class TestMemoryDistiller:
         assert count == 0
 
     def test_run_decay_stale(self, distiller, monkeypatch):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime, timedelta
         conn = get_connection()
         old_date = (datetime.utcnow() - timedelta(days=100)).isoformat()
@@ -327,7 +327,7 @@ class TestMemoryDistiller:
         assert row["status"] == "stale"
 
     def test_run_decay_deprecated(self, distiller, monkeypatch):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime, timedelta
         conn = get_connection()
         old_date = (datetime.utcnow() - timedelta(days=130)).isoformat()
@@ -350,7 +350,7 @@ class TestMemoryDistiller:
         assert row["status"] == "deprecated"
 
     def test_run_decay_stm_expired(self, distiller, monkeypatch):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime, timedelta
         conn = get_connection()
         old_date = (datetime.utcnow() - timedelta(days=45)).isoformat()
@@ -373,7 +373,7 @@ class TestMemoryDistiller:
         assert row["cnt"] == 0
 
     def test_run_decay_active_not_decayed(self, distiller, monkeypatch):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime
         conn = get_connection()
         now = datetime.utcnow().isoformat()

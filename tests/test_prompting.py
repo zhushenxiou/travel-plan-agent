@@ -1,8 +1,8 @@
 """Tests for core/prompting.py — PromptBuilder"""
 from domain.reasoning.prompting import PromptBuilder
-from domain.reasoning.context import PromptContext
-from domain.reasoning.context_manager import PreparedContext
-from core.types import IntentResult, IntentType
+from domain.reasoning.prompt_context import PromptContext
+from domain.reasoning.contxt_manager import PreparedContext
+from domain.shared.types import IntentResult, IntentType
 
 
 class TestPromptBuilder:

@@ -15,10 +15,10 @@ from app import build_orchestrator
 
 from config import settings
 from domain.shared.runtime.logging import init_from_settings
-from core.auth import UserStore
-from core.token import generate_token, verify_token
-from core.trending import get_trending_travel, refresh_pool
-from core.audit.logger import AuditLogger
+from domain.user.auth.auth import UserStore
+from domain.user.auth.token import generate_token, verify_token
+from application.trending.manager import get_trending_travel, refresh_pool
+from domain.shared.audit.logger import AuditLogger
 
 init_from_settings()
 logger = logging.getLogger(__name__)
@@ -356,7 +356,7 @@ async def get_memories(request: Request) -> dict:
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
         return JSONResponse(status_code=401, content={"detail": "未登录"})
-    from core.memory import DualLayerMemoryManager
+    from domain.memory.manager import DualLayerMemoryManager
     mgr = DualLayerMemoryManager()
     ltm_list = mgr.get_long_term_memories(user_id)
     stm_list = mgr.get_short_term_memories(user_id, limit=20)
@@ -407,7 +407,7 @@ async def delete_memory(memory_type: str, memory_id: int, request: Request) -> d
         return JSONResponse(status_code=401, content={"detail": "未登录"})
     if memory_type not in ("short_term", "long_term"):
         return JSONResponse(status_code=400, content={"detail": "无效的记忆类型"})
-    from infra.db import get_connection
+    from infrastructure.persistence.database import get_connection
     conn = get_connection()
     table = "short_term_memories" if memory_type == "short_term" else "long_term_memories"
     row = conn.execute(f"SELECT id FROM {table} WHERE id = ? AND user_id = ?", (memory_id, user_id)).fetchone()
@@ -482,7 +482,7 @@ async def task_snapshot(session_id: str, user_id: str | None = None) -> dict:
 @app.get("/health")
 async def health() -> dict:
     try:
-        from infra.health import check_health
+        from infrastructure.persistence.health import check_health
         status = check_health()
         return {"status": status.status, "details": status.details}
     except Exception as exc:
@@ -506,7 +506,7 @@ async def trending(refresh: bool = False) -> dict:
     return {"items": items}
 
 
-from core.itinerary.repository import ItineraryRepository
+from domain.travel.itinerary.repository import ItineraryRepository
 
 _itinerary_repo = ItineraryRepository()
 
@@ -515,7 +515,7 @@ def _user_owns_itinerary(user_id: str, itin) -> bool:
     if itin.user_id and itin.user_id == user_id:
         return True
     if itin.session_id:
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         conn = get_connection()
         row = conn.execute(
             "SELECT 1 FROM tasks WHERE user_id = ? AND session_id = ? LIMIT 1",
@@ -524,7 +524,7 @@ def _user_owns_itinerary(user_id: str, itin) -> bool:
         if row:
             return True
     if itin.user_id:
-        from core.auth import UserStore
+        from domain.user.auth.auth import UserStore
         us = UserStore()
         existing = us.get_by_id(itin.user_id)
         if not existing:
@@ -550,7 +550,7 @@ async def create_itinerary(request: Request) -> dict:
     status = str(body.get("status", "planning"))
     days_data = body.get("days", [])
     if days_data:
-        from core.itinerary.schema import Itinerary as Itin, DayPlan, Activity
+        from domain.travel.itinerary.schema import Itinerary as Itin, DayPlan, Activity
         itin = Itin(
             user_id=user_id,
             session_id=session_id,
@@ -605,7 +605,7 @@ async def list_itineraries(request: Request) -> dict:
         return JSONResponse(status_code=401, content={"detail": "未登录"})
     items = _itinerary_repo.list_itineraries(user_id)
     seen_ids = {i.id for i in items}
-    from infra.db import get_connection
+    from infrastructure.persistence.database import get_connection
     conn = get_connection()
     session_rows = conn.execute(
         "SELECT DISTINCT session_id FROM tasks WHERE user_id = ? AND session_id != ''",
@@ -620,7 +620,7 @@ async def list_itineraries(request: Request) -> dict:
             (sid,),
         ).fetchall()
         for r in session_itins:
-            from core.itinerary.schema import Itinerary
+            from domain.travel.itinerary.schema import Itinerary
             itin = Itinerary.from_row(dict(r))
             if itin.id not in seen_ids:
                 items.append(itin)
@@ -972,7 +972,7 @@ async def get_shared_itinerary(token: str) -> dict:
 
 
 # ==================== 相册管理 ====================
-from core.album.service import AlbumService
+from domain.travel.album.service import AlbumService
 from fastapi import UploadFile, File, Form
 from fastapi.responses import FileResponse as FastAPIFileResponse
 
@@ -1122,11 +1122,7 @@ async def serve_album_image(file_path: str, request: Request):
     if not user_id:
         token = request.query_params.get("token", "")
         if token:
-            try:
-                payload = verify_token(token)
-                user_id = payload.get("user_id")
-            except Exception:
-                pass
+            user_id = verify_token(token)
     if not user_id:
         return JSONResponse(status_code=401, content={"detail": "未登录"})
     full_path = settings.data_dir / "album" / file_path

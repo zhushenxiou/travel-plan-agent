@@ -410,7 +410,7 @@ class TravelIntentClassifier:
         return missing
 
     def to_intent_result(self, result: TravelIntentResult) -> Any:
-        from core.types import IntentResult, IntentType
+        from domain.shared.types import IntentResult, IntentType
 
         mapping: dict[TravelIntentType, IntentType] = {
             TravelIntentType.TRIP_PLANNING: IntentType.TASK,

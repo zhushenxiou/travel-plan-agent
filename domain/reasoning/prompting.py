@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from domain.reasoning.context import PromptContext
+from domain.reasoning.prompt_context import PromptContext
 from domain.shared.types import IntentResult
 
 class PromptBuilder:

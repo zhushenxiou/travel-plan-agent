@@ -100,7 +100,7 @@ class EmotionDetector:
 
         strategy = EMOTION_STRATEGIES.get(emotion, EMOTION_STRATEGIES[EmotionType.NEUTRAL])
 
-        from core.metrics.collector import record_emotion
+        from domain.shared.metrics.collector import record_emotion
         record_emotion(emotion.value)
 
         return EmotionResult(
