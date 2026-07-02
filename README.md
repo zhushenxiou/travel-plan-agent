@@ -1,31 +1,25 @@
-# Claw 旅行规划师
+# Claw — 通用智能体平台
 
-AI 驱动的智能旅行规划助手 — 实时搜索 · 智能行程 · 地图展示 · 花费统计 · 一键分享
+通用 Agent 调度 + 领域 Agent + Skill + MCP · 智能旅行 · 流式对话 · 地图展示 · 花费统计 · 一键分享
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![React 18](https://img.shields.io/badge/React-18-61dafb.svg)](https://reactjs.org/)
-
-## 在线演示
-
-> **🚀 在线 Demo**：[https://claw-travel-demo.up.railway.app](https://claw-travel-demo.up.railway.app)
->
-> 测试账号：`demo` / `demo123`（或自行注册）
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com/)
 
 ---
 
 ## 功能亮点
 
-- **AI 对话** — 基于大语言模型，自动识别旅行意图，多轮对话规划行程
-- **流式输出** — SSE 流式对话，实时展示思考过程与工具调用状态
+- **多智能体架构** — Orchestrator 总调度 + TravelAgent / DynamicAgent + 自定义 Agent，LLM 智能路由
+- **AI 流式对话** — SSE 流式对话，实时展示思考过程与工具调用状态
 - **行程生成** — 根据需求自动生成多日行程，含景点、时间、费用、贴士
 - **地图展示** — Leaflet + 高德瓦片地图，标记行程地点并绘制路线
 - **花费统计** — 按天/按活动统计预算与实际花费，支持打卡记录
 - **行程分享** — 生成分享链接，无需登录即可查看行程
 - **行程对比** — 最多 4 个行程横向对比预算与活动
-- **相册管理** — 上传旅行照片，自动提取 EXIF 地理位置，在地图上标记，AI 生成游记
+- **相册管理** — 上传旅行照片，自动提取 EXIF 地理位置，地图标记，AI 生成游记
 - **记忆系统** — 双层记忆（短期/长期），自动提取用户偏好与旅行经验，支持记忆蒸馏
-- **MCP 工具集成** — 动态选择 MCP 工具，支持 Web 搜索等外部能力扩展
+- **Skill + MCP** — 模块化技能（高德地图、飞猪旅行）与 MCP 工具代理（Web 搜索），可扩展
 - **情感检测** — 实时检测用户情绪，自动调整回复策略
 - **用户画像** — 根据交互记录自动构建用户偏好标签
 - **审计日志** — 记录 LLM 调用、工具执行、意图识别全链路审计事件
@@ -45,34 +39,50 @@ graph TB
         Album[相册组件]
     end
 
-    subgraph "后端 (FastAPI)"
-        API[API 层<br/>43 个接口]
+    subgraph "API 层 (FastAPI)"
+        API[API 路由<br/>47 个接口]
         Auth[认证中间件<br/>Token 鉴权]
+        RateLimit[限流中间件]
+    end
+    
+    subgraph "应用层 (Application)"
+        Orchestrator[Orchestrator<br/>总调度 Agent]
+        BuiltinAgents[内置智能体<br/>travel / yunhe]
+    end
+
+    subgraph "领域层 (Domain)"
+        AgentCore[Agent 主循环<br/>travel_core]
+        Reasoning[ReAct 推理引擎]
+        Intent[意图识别]
+        Emotion[情感检测]
+        Profile[用户画像]
         
-        subgraph "Agent 核心"
-            Agent[Agent 主循环]
-            Reasoning[ReAct 推理引擎]
-            Intent[意图识别]
-            Emotion[情感检测]
-            Profile[用户画像]
-            
-            subgraph "记忆系统"
-                Memory[双层记忆管理]
-                STM[短期记忆]
-                LTM[长期记忆]
-                Extractor[记忆提取]
-                Distiller[记忆蒸馏]
-            end
-            
-            subgraph "工具系统"
-                Registry[工具注册表]
-                Executor[工具执行器]
-                Policy[工具策略]
-                
-                Tools[内置工具]
-                MCP[MCP 工具代理]
-            end
+        subgraph "记忆系统"
+            Memory[双层记忆管理]
+            STM[短期记忆]
+            LTM[长期记忆]
+            Extractor[记忆提取]
+            Distiller[记忆蒸馏]
         end
+    end
+    
+    subgraph "基础设施层 (Infrastructure)"
+        subgraph "工具系统"
+            Registry[工具注册表]
+            Executor[工具执行器]
+            Policy[工具策略]
+            Tools[内置工具适配器]
+            MCP[MCP 工具代理]
+        end
+        
+        subgraph "技能系统"
+            Skills[Skill Provider]
+            AmapSkill[高德地图]
+            FliggySkill[飞猪旅行]
+        end
+        
+        LLMClient[LLM 适配器<br/>OpenAI 兼容]
+        DB[(SQLite 持久化)]
     end
 
     subgraph "外部服务"
@@ -82,21 +92,19 @@ graph TB
         WebSearch[Web 搜索]
     end
 
-    subgraph "数据存储"
-        SQLite[(SQLite<br/>主数据库)]
-        Redis[(Redis<br/>缓存/会话)]
-        FileSystem[文件系统<br/>相册/日志]
-    end
-
     UI --> API
     Chat --> API
     Map --> API
     Album --> API
     
     API --> Auth
-    Auth --> Agent
+    API --> RateLimit
+    API --> Orchestrator
     
-    Agent --> Reasoning
+    Orchestrator --> BuiltinAgents
+    Orchestrator --> AgentCore
+    
+    AgentCore --> Reasoning
     Reasoning --> Intent
     Reasoning --> Emotion
     Reasoning --> Profile
@@ -114,48 +122,23 @@ graph TB
     Executor --> Tools
     Executor --> MCP
     
-    Tools --> LLM
-    Tools --> Amap
-    Tools --> Fliggy
+    Executor --> Skills
+    Skills --> AmapSkill
+    Skills --> FliggySkill
+    
+    Tools --> LLMClient
     MCP --> WebSearch
+    LLMClient --> LLM
+    AmapSkill --> Amap
+    FliggySkill --> Fliggy
     
-    Agent --> SQLite
-    Memory --> SQLite
-    Profile --> SQLite
-    Auth --> SQLite
-    
-    Agent -.-> Redis
-    Album --> FileSystem
+    AgentCore --> DB
+    Memory --> DB
+    Profile --> DB
+    Auth --> DB
 ```
 
----
 
-## 界面预览
-
-> **📸 截图占位**：请将以下占位图替换为实际项目截图
-
-| 对话界面 | 行程规划 |
-|:---:|:---:|
-| ![对话界面](docs/screenshots/chat.png) | ![行程规划](docs/screenshots/itinerary.png) |
-| AI 对话与流式输出 | 多日行程自动生成 |
-
-| 地图展示 | 相册管理 |
-|:---:|:---:|
-| ![地图展示](docs/screenshots/map.png) | ![相册管理](docs/screenshots/album.png) |
-| 行程地点标记与路线 | 照片上传与地图标记 |
-
-| 记忆面板 | 行程对比 |
-|:---:|:---:|
-| ![记忆面板](docs/screenshots/memory.png) | ![行程对比](docs/screenshots/compare.png) |
-| 用户偏好与经验记忆 | 多行程横向对比 |
-
-**截图建议**：
-1. `chat.png` — 展示 AI 对话与流式输出效果
-2. `itinerary.png` — 展示生成的多日行程详情
-3. `map.png` — 展示地图上的行程标记与路线
-4. `album.png` — 展示相册上传与照片列表
-5. `memory.png` — 展示记忆面板的长期/短期记忆
-6. `compare.png` — 展示多行程对比界面
 
 ---
 
@@ -165,55 +148,127 @@ graph TB
 |----|------|
 | 后端 | Python 3.11 · FastAPI · SQLite · OpenAI 兼容 API · 高德地图 Web服务 API |
 | 前端 | React 18 · TypeScript · Vite 6 · Tailwind CSS 3 · Zustand · Leaflet · Framer Motion · React Router 7 |
-| Agent | ReAct 推理循环 · 双层记忆 · 意图识别 · 情感检测 · MCP 工具代理 |
-| 基础设施 | Uvicorn · Prometheus · Redis（可选） |
+| Agent | ReAct 推理循环 · 双层记忆 · 意图识别 · 情感检测 · MCP 工具代理 · Skill 系统 |
+| 基础设施 | Uvicorn · Prometheus · Redis（可选） · DDD 分层架构 |
+
+---
+
+## 前端开发指南
+
+> **前端将交给其他开发者独立开发，你是后端维护者。** 以下信息帮助前端团队快速上手。
+
+### 前端技术栈
+
+| 类别 | 技术 |
+|------|------|
+| 框架 | React 18 |
+| 语言 | TypeScript |
+| 构建 | Vite 6 |
+| 样式 | Tailwind CSS 3 |
+| 状态管理 | Zustand |
+| 路由 | React Router 7 |
+| 地图 | Leaflet |
+| 动画 | Framer Motion |
+
+### 前端目录结构
+
+```
+frontend/
+├── src/
+│   ├── pages/               # 页面
+│   │   ├── Home.tsx          # 主对话页
+│   │   ├── ItineraryOverview.tsx  # 行程详情
+│   │   ├── ComparePage.tsx   # 行程对比
+│   │   ├── MemoryPage.tsx    # 记忆面板
+│   │   ├── AlbumPage.tsx     # 相册管理
+│   │   └── SharedItinerary.tsx # 分享页（无需登录）
+│   ├── components/           # 通用组件
+│   │   ├── Chat/             # 对话组件
+│   │   ├── Album/            # 相册组件
+│   │   └── Itinerary/        # 行程组件
+│   ├── hooks/                # Zustand store
+│   └── utils/                # 工具函数
+├── vite.config.ts            # Vite 配置（含 API 代理）
+└── package.json
+```
+
+### API 调用方式
+
+Vite 已配置代理，前端直接请求 `/api/*` 即可，无需处理跨域：
+
+```typescript
+// 推荐 axios 封装
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: '/api',
+  headers: { 'Content-Type': 'application/json' },
+});
+
+// 自动携带 Token
+api.interceptors.request.use(config => {
+  const token = localStorage.getItem('claw_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// 全局 401 处理
+api.interceptors.response.use(
+  res => res,
+  err => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('claw_token');
+      window.location.href = '/login';
+    }
+    return Promise.reject(err);
+  }
+);
+```
+
+### 核心接口速览
+
+| 接口 | 用途 | 鉴权 |
+|------|------|------|
+| `POST /api/auth/login` | 登录 | 公开 |
+| `POST /api/auth/register` | 注册 | 公开 |
+| `GET /api/agents` | 获取智能体列表 | 需登录 |
+| `POST /api/sessions` | 创建会话 | 需登录 |
+| `GET /api/sessions` | 会话列表 | 需登录 |
+| `POST /api/chat/stream` | **流式对话（SSE）** | 需登录 |
+| `POST /api/chat` | 同步对话 | 需登录 |
+| `GET /api/itineraries` | 行程列表 | 需登录 |
+| `GET /api/itineraries/:id` | 行程详情 | 需登录 |
+| `POST /api/itineraries/:id/photos` | 上传照片 | 需登录 |
+| `POST /api/feedback` | 提交反馈（👍/👎） | 需登录 |
+| `GET /api/trending` | 热门推荐 | 公开 |
+| `GET /api/shared/:token` | 分享页 | 公开 |
+
+> 📘 **完整 API 文档**：[docs/api/API.md](docs/api/API.md) — 47 个接口，含 TypeScript 类型定义、SSE 流式处理代码示例、错误码说明。
 
 ---
 
 ## 快速开始
 
-### 1. 安装依赖
+### 后端启动（你维护的部分）
 
 ```bash
-# 后端
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# Windows: .venv\Scripts\activate  |  macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+cp config/.env.example .env
+# 编辑 .env，至少填入 CLAW_API_KEY 和 AMAP_WEBSERVICE_KEY
+uvicorn api.server:app --reload --host 0.0.0.0 --port 8000
+```
 
-# 前端
+### 前端启动（交给前端团队）
+
+```bash
 cd frontend
 npm install
-```
-
-### 2. 配置环境变量
-
-```bash
-cp .env.example .env
-# 编辑 .env，填入你的 API Key
-```
-
-**必填配置**：
-- `CLAW_API_KEY` — LLM API 密钥（通义千问或 OpenAI 兼容）
-- `AMAP_WEBSERVICE_KEY` — 高德地图 Web服务 Key
-
-### 3. 启动服务
-
-```bash
-# 后端（端口 8000）
-uvicorn api.server:app --reload --host 0.0.0.0 --port 8000
-
-# 前端（端口 5173，自动代理 /api 到后端）
-cd frontend
-npm run dev
+npm run dev         # 端口 5173，自动代理 /api → localhost:8000
 ```
 
 打开 http://localhost:5173 即可使用。
-
-### 4. CLI 模式
-
-```bash
-python main.py chat
-```
 
 ---
 
@@ -238,17 +293,14 @@ python main.py chat
    - **Start Command**: `uvicorn api.server:app --host 0.0.0.0 --port $PORT`
 5. 添加环境变量，部署
 
-### 方式三：Docker Compose（本地部署）
+### 方式三：本地部署
 
 ```bash
-# 构建并启动
-docker-compose up -d
+# Windows
+.\start.ps1
 
-# 查看日志
-docker-compose logs -f
-
-# 停止
-docker-compose down
+# Linux / macOS
+chmod +x start.sh && ./start.sh
 ```
 
 ---
@@ -258,68 +310,44 @@ docker-compose down
 ```
 claw7/
 ├── api/                    # API 路由与中间件
-│   ├── server.py           # FastAPI 主文件（43 个接口）
+│   ├── server.py           # FastAPI 主入口（47 个接口）
+│   ├── routes/             # 路由模块
+│   ├── middleware/         # 认证 / 限流中间件
 │   └── intl_coords.py      # 国际目的地坐标库
-├── core/                   # 核心业务逻辑
-│   ├── agent.py            # Agent 主循环（chat / chat_stream）
-│   ├── llm.py              # LLM 调用封装（OpenAI 兼容）
-│   ├── reasoning.py        # ReAct 推理引擎
-│   ├── prompting.py        # Prompt 构建器
-│   ├── prompt_context.py   # Prompt 上下文数据类
-│   ├── memory.py           # 双层记忆管理（短期/长期）
-│   ├── memory_extractor.py # 记忆提取（LLM 驱动）
-│   ├── memory_distiller.py # 记忆蒸馏（短期→长期）
-│   ├── session.py          # 会话管理
-│   ├── auth.py / token.py  # 用户认证与 Token
-│   ├── trending.py         # 热门推荐
-│   ├── trace.py            # 运行追踪
-│   ├── runtime_facts.py    # 运行时事实（日期/时间）
-│   ├── contxt_manager.py   # 上下文管理
-│   ├── logging.py          # 日志配置
-│   ├── logging_config.py   # JSON 结构化日志
-│   ├── mcp_catalog.py      # MCP 工具目录
-│   ├── itinerary/          # 行程模块（schema / repository / parser）
-│   ├── album/              # 相册模块（schema / repository / service）
-│   ├── intent/             # 意图识别（旅行意图分类）
-│   ├── emotion/            # 情感检测
-│   ├── profile/            # 用户画像
-│   ├── audit/              # 审计日志（含敏感信息脱敏）
-│   └── metrics/            # 监控指标（Prometheus）
-├── tools/                  # 工具层
-│   ├── base.py             # 工具基类（ToolSpec / ToolHandler）
-│   ├── registry.py         # 工具注册表
-│   ├── executor.py         # 工具执行器
-│   ├── catalog.py          # 工具目录
-│   ├── policy.py           # 工具策略（权限控制）
-│   ├── travel.py           # 旅行工具
-│   ├── amap.py             # 高德地图工具
-│   ├── fliggy.py           # 飞猪工具
-│   ├── http.py             # HTTP 工具
-│   ├── interaction.py      # 交互工具（ask_user）
-│   └── mcp.py              # MCP 代理工具
-├── mcps/                   # MCP 服务器配置
-│   └── web-search/         # Web 搜索 MCP
-├── skills/                 # 技能定义
-│   ├── amap-maps/          # 高德地图技能
-│   └── fliggy-travel/      # 飞猪旅行技能
-├── infra/                  # 基础设施
-│   ├── db.py               # SQLite 数据库（含迁移）
-│   └── health.py           # 健康检查
+├── domain/                 # 领域层（DDD 核心业务逻辑）
+│   ├── agent/              # 多智能体系统（Orchestrator / TravelAgent / DynamicAgent）
+│   ├── travel/             # 旅行聚合（意图识别 / 行程 / 相册 / 工具）
+│   ├── memory/             # 双层记忆（提取 / 蒸馏）
+│   ├── reasoning/          # ReAct 推理引擎（Prompt / 上下文管理）
+│   ├── user/               # 用户聚合（认证 / 画像 / 情感 / 会话）
+│   └── shared/             # 共享组件（审计 / 监控 / 运行时）
+├── infrastructure/         # 基础设施层
+│   ├── tools/              # 工具系统（注册表 / 执行器 / 策略 / 适配器）
+│   ├── skills/             # Skill 定义（高德地图 / 飞猪 / 自定义）
+│   ├── llm/                # LLM 适配器（OpenAI 兼容客户端）
+│   ├── persistence/        # 持久化（SQLite 数据库 / 健康检查）
+│   ├── mcp/                # MCP 工具代理（运行时 / 目录 / 服务器配置）
+│   └── external/           # 外部服务集成
+├── application/            # 应用层
+│   └── builtin_agents/     # 内置智能体 YAML 配置（travel / yunhe）
+├── config/                 # 配置层
+│   ├── settings.py          # Pydantic Settings 集中管理
+│   └── .env.example         # 环境变量模板
 ├── frontend/               # React 前端
-│   ├── src/pages/          # 页面组件（Home / ItineraryOverview / MemoryPage / ComparePage / AlbumPage / SharedItinerary）
+│   ├── src/pages/          # 页面（Home / ItineraryOverview / Memory / Compare / Album / Shared）
 │   ├── src/components/     # 通用组件（Chat / Album / Itinerary）
 │   ├── src/hooks/          # Zustand 状态管理
 │   └── src/utils/          # 工具函数
-├── tests/                  # 测试（15 个测试文件，236 个用例）
+├── tests/                  # 测试（16 个测试文件）
 ├── docs/                   # 文档
 │   ├── README.md           # 详细项目说明
-│   ├── API.md              # 接口文档
-│   ├── album-module.md     # 相册模块说明
-│   └── streaming-fix.md    # 流式输出修复记录
-├── config.py               # 配置管理（pydantic-settings）
-├── app.py                  # Agent 构建（依赖注入）
-├── main.py                 # CLI 入口
-└── .env.example            # 环境变量模板
+│   ├── api/API.md          # API 接口文档（47 个接口）
+│   ├── architecture.md     # DDD 架构说明
+│   ├── MULTI_AGENT_DEV.md  # 多智能体开发指南
+│   └── UNIVERSAL_AGENT_DESIGN.md  # 通用 Agent 设计文档
+├── app.py                  # Agent 构建（依赖注入容器）
+├── start.ps1 / start.sh    # 启动脚本（Windows / Linux）
+└── requirements.txt        # Python 依赖
 ```
 
 ---
@@ -330,28 +358,32 @@ claw7/
 |------|------|--------|------|
 | `CLAW_API_KEY` | ✅ | — | LLM API 密钥 |
 | `CLAW_MODEL` | ❌ | `qwen3.5-122b-a10b` | 模型名称 |
-| `CLAW_BASE_URL` | ❌ | 通义千问 | OpenAI 兼容 API 地址 |
-| `AMAP_WEBSERVICE_KEY` | ✅ | — | 高德地图 Web服务 Key（后端地理编码） |
-| `AMAP_JS_API_KEY` | ❌ | — | 高德地图 JS API Key（前端地图展示） |
+| `CLAW_BASE_URL` | ❌ | 通义千问 DashScope | OpenAI 兼容 API 地址 |
+| `AMAP_WEBSERVICE_KEY` | ✅ | — | 高德地图 Web服务 Key |
+| `AMAP_JS_API_KEY` | ❌ | — | 高德地图 JS API Key（前端） |
 | `FLYAI_API_KEY` | ❌ | — | 飞猪旅行 API Key |
-| `VITE_AMAP_KEY` | ❌ | — | 前端高德地图 Key（Vite 注入） |
 | `CLAW_LOG_LEVEL` | ❌ | `DEBUG` | 日志级别 |
 | `CLAW_DATABASE_PATH` | ❌ | `data/claw.db` | SQLite 数据库路径 |
 | `CLAW_RATE_LIMIT_RPM` | ❌ | `60` | 每分钟请求限制 |
 | `CLAW_METRICS_ENABLED` | ❌ | `true` | 是否启用 Prometheus 监控 |
 | `CLAW_METRICS_PORT` | ❌ | `9090` | Prometheus 指标端口 |
 | `CLAW_REDIS_URL` | ❌ | `redis://localhost:6379/0` | Redis 连接地址 |
+| `CLAW_EMOTION_ENABLED` | ❌ | `true` | 是否启用情感检测 |
+| `CLAW_AUDIT_ENABLED` | ❌ | `true` | 是否启用审计日志 |
+| `CLAW_MAX_ITERATIONS` | ❌ | `15` | Agent 最大推理轮次 |
+| `CLAW_MEMORY_DISTILL_THRESHOLD` | ❌ | `2` | 记忆蒸馏阈值 |
 
-完整配置项参见 [.env.example](.env.example)。
+完整配置项参见 [config/.env.example](config/.env.example)。
 
 ---
 
 ## 文档
 
 - [项目详细说明](docs/README.md)
-- [API 接口文档](docs/API.md)
-- [相册模块说明](docs/album-module.md)
-- [流式输出修复记录](docs/streaming-fix.md)
+- [API 接口文档](docs/api/API.md) — 47 个接口完整文档
+- [DDD 架构说明](docs/architecture.md)
+- [多智能体开发指南](docs/MULTI_AGENT_DEV.md)
+- [通用 Agent 设计文档](docs/UNIVERSAL_AGENT_DESIGN.md)
 
 ---
 
@@ -377,4 +409,4 @@ pytest tests/ -v
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Claw Contributors
+Private © 2026 Claw Contributors
