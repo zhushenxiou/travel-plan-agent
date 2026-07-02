@@ -5,6 +5,11 @@ from collections.abc import Callable
 from domain.agent.base import BaseAgent
 from infrastructure.llm.openai import OpenAILLM
 from infrastructure.skills.provider import SkillProvider
+from infrastructure.tools.registry import ToolRegistry
+from infrastructure.tools.executor import ToolExecutor
+from infrastructure.mcp.runtime import MCPProxyRuntime
+from domain.user.session.manager import SessionManager
+from domain.shared.audit.logger import AuditLogger
 from domain.agent.schema import AgentConfig
 from domain.agent.dynamic_agent import DynamicAgent
 
@@ -28,11 +33,21 @@ class AgentFactory:
         *,
         llm: OpenAILLM,
         skill_provider: SkillProvider,
+        tool_registry: ToolRegistry,
+        tool_executor: ToolExecutor,
+        session_store: SessionManager,
+        mcp_runtime: MCPProxyRuntime,
+        audit_logger: AuditLogger,
         # 内置智能体的特殊构造器（如 TravelAgent 需要完整 Agent 主循环）
         builtin_builders: dict[str, Callable[[AgentConfig], BaseAgent]] | None = None,
     ) -> None:
         self._llm = llm
         self._skill_provider = skill_provider
+        self._tool_registry = tool_registry
+        self._tool_executor = tool_executor
+        self._session_store = session_store
+        self._mcp_runtime = mcp_runtime
+        self._audit_logger = audit_logger
         self._builtin_builders = builtin_builders or {}
 
     def create(self, config: AgentConfig) -> BaseAgent:
@@ -42,9 +57,14 @@ class AgentFactory:
             builder = self._builtin_builders[config.id]
             return builder(config)
 
-        # 默认：用 DynamicAgent（配置驱动，零代码）
+        # 默认：用 DynamicAgent（配置驱动，零代码，具备完整 ReAct 工具执行能力）
         return DynamicAgent(
             config=config,
             llm=self._llm,
             skill_provider=self._skill_provider,
+            tool_registry=self._tool_registry,
+            tool_executor=self._tool_executor,
+            session_store=self._session_store,
+            mcp_runtime=self._mcp_runtime,
+            audit_logger=self._audit_logger,
         )

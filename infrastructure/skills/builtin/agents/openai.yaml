@@ -2,6 +2,13 @@ interface:
   display_name: "Amap Maps"
   short_description: "Gaode Maps: POI search, route planning, travel planning, heatmaps"
   default_prompt: "Use $amap-maps for map search, route planning, and geographic services"
+  tools:
+    - amap_search_poi
+    - amap_search_nearby
+    - amap_plan_route
+    - amap_get_weather
+    - amap_geocode
+  category: "travel"
 
 i18n:
   zh:

@@ -54,8 +54,8 @@ fi
 if [ "$SKIP_INSTALL" != "1" ]; then
     c_step "检查 Python 依赖"
     if ! $PYTHON -c "import fastapi, uvicorn, openai" 2>/dev/null; then
-        c_warn "安装 Python 依赖（requirements.txt）"
-        $PYTHON -m pip install -r requirements.txt
+        c_warn "安装 Python 依赖（pyproject.toml）"
+        $PYTHON -m pip install -e ".[dev]"
     fi
     c_ok "Python 依赖就绪"
 

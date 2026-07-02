@@ -1,0 +1,14 @@
+{
+  "name": "click",
+  "description": "点击页面元素",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS 选择器或 XPath"
+      }
+    },
+    "required": ["selector"]
+  }
+}

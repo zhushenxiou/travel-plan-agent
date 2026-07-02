@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+
+from config import settings
 from infrastructure.llm.openai import OpenAILLM
 from domain.shared.runtime.logging import init_from_settings
 from domain.reasoning.prompting import PromptBuilder
@@ -12,12 +13,13 @@ from infrastructure.tools.adapters.http import get_http_handlers, get_http_specs
 from domain.travel.tools.travel_tools import get_travel_handlers, get_travel_specs
 from infrastructure.tools.adapters.amap import get_amap_handlers, get_amap_specs
 from infrastructure.tools.adapters.fliggy import get_fliggy_handlers, get_fliggy_specs
+from infrastructure.tools.adapters.shared import get_shared_handlers, get_shared_specs
 from infrastructure.tools.policy import ToolPolicy
 from infrastructure.tools.registry import ToolRegistry
 from infrastructure.tools.catalog import ToolCatalog
 from infrastructure.tools.base import bind_tool
-from infrastructure.external.mcp.catalog import MCPCatalog
-from infrastructure.external.mcp.runtime import MCPProxyRuntime
+from infrastructure.mcp.catalog import MCPCatalog
+from infrastructure.mcp.runtime import MCPProxyRuntime
 from domain.travel.intent.travel_classifier import TravelIntentClassifier
 from domain.user.emotion.detector import EmotionDetector
 from domain.user.profile.manager import ProfileManager
@@ -25,13 +27,13 @@ from domain.shared.audit.logger import AuditLogger
 from domain.shared.metrics.collector import start_metrics_server
 from infrastructure.persistence.database import init_db
 
-from domain.agent.travel_core import Agent
+from domain.travel.core import Agent
 from domain.agent.schema import AgentConfig
 from application.builtin_agents.loader import BuiltinAgentLoader
 from domain.agent.repository import CustomAgentRepository
 from domain.agent.factory import AgentFactory
 from domain.agent.orchestrator import OrchestratorAgent
-from domain.agent.travel_agent import TravelAgent
+from domain.travel.agent import TravelAgent
 from infrastructure.skills.provider import FileSkillProvider, SkillProvider
 
 
@@ -42,31 +44,19 @@ class AppContainer:
     skill_provider: SkillProvider
     builtin_configs: list[AgentConfig] = field(default_factory=list)
     custom_repo: CustomAgentRepository = None  # type: ignore[assignment]
+    mcp_runtime: MCPProxyRuntime = None  # type: ignore[assignment]
+    mcp_catalog: MCPCatalog = None  # type: ignore[assignment]
 
 
-def build_agent() -> Agent:
-    """保留原有 build_agent()，向后兼容（仅构建旅游 Agent 主循环）。"""
-    return _build_travel_agent_core(
-        AuditLogger(),
-        OpenAILLM(audit_logger=AuditLogger()),
-    )
-
-
-def _build_travel_agent_core(llm: OpenAILLM, audit_logger: AuditLogger) -> Agent:
-    """构建原有旅游 Agent（所有原代码保留，抽成函数）。"""
-    init_from_settings()
-    init_db()
-    prompt_builder = PromptBuilder()
-    session_store = SessionManager()
+def _build_tool_infrastructure(
+    mcp_catalog: MCPCatalog,
+    mcp_runtime: MCPProxyRuntime,
+    audit_logger: AuditLogger,
+) -> tuple[ToolRegistry, ToolExecutor]:
+    """构建工具注册表和执行器（供 travel_agent 和 orchestrator 共享）。"""
     tool_catalog = ToolCatalog()
     tool_registry = ToolRegistry()
     tool_policy = ToolPolicy()
-    mcp_catalog = MCPCatalog(Path(__file__).resolve().parents[0] / "infrastructure" / "external" / "mcp" / "servers")
-    mcp_runtime = MCPProxyRuntime(catalog=mcp_catalog)
-
-    travel_classifier = TravelIntentClassifier(llm=llm)
-    emotion_detector = EmotionDetector(llm=llm)
-    profile_manager = ProfileManager()
 
     all_specs = (
         get_http_specs()
@@ -74,6 +64,7 @@ def _build_travel_agent_core(llm: OpenAILLM, audit_logger: AuditLogger) -> Agent
         + get_travel_specs()
         + get_amap_specs()
         + get_fliggy_specs()
+        + get_shared_specs()
         + mcp_runtime.build_specs()
     )
     for spec in all_specs:
@@ -85,6 +76,7 @@ def _build_travel_agent_core(llm: OpenAILLM, audit_logger: AuditLogger) -> Agent
     all_handlers.update(get_travel_handlers())
     all_handlers.update(get_amap_handlers())
     all_handlers.update(get_fliggy_handlers())
+    all_handlers.update(get_shared_handlers())
     all_handlers.update(mcp_runtime.build_handlers())
 
     for spec in tool_catalog.list_specs():
@@ -92,7 +84,52 @@ def _build_travel_agent_core(llm: OpenAILLM, audit_logger: AuditLogger) -> Agent
 
     tool_executor = ToolExecutor(registry=tool_registry, policy=tool_policy, audit_logger=audit_logger)
 
-    start_metrics_server()
+    return tool_registry, tool_executor
+
+
+def build_agent() -> Agent:
+    """保留原有 build_agent()，向后兼容（仅构建旅游 Agent 主循环）。"""
+    audit_logger = AuditLogger()
+    llm = OpenAILLM(audit_logger=audit_logger)
+
+    mcp_catalog = MCPCatalog(settings.mcp_servers_dir)
+    mcp_runtime = MCPProxyRuntime(catalog=mcp_catalog)
+    tool_registry, tool_executor = _build_tool_infrastructure(mcp_catalog, mcp_runtime, audit_logger)
+
+    return _build_travel_agent_core(
+        llm=llm,
+        audit_logger=audit_logger,
+        tool_registry=tool_registry,
+        tool_executor=tool_executor,
+        session_store=SessionManager(),
+        mcp_catalog=mcp_catalog,
+        mcp_runtime=mcp_runtime,
+        skip_init=True,
+    )
+
+
+def _build_travel_agent_core(
+    llm: OpenAILLM,
+    audit_logger: AuditLogger,
+    tool_registry: ToolRegistry,
+    tool_executor: ToolExecutor,
+    session_store: SessionManager,
+    mcp_catalog: MCPCatalog,
+    mcp_runtime: MCPProxyRuntime,
+    skip_init: bool = False,
+) -> Agent:
+    """构建原有旅游 Agent（依赖由外部注入，允许多 Agent 共享实例）。"""
+    if not skip_init:
+        init_from_settings()
+        init_db()
+    prompt_builder = PromptBuilder()
+
+    travel_classifier = TravelIntentClassifier(llm=llm)
+    emotion_detector = EmotionDetector(llm=llm)
+    profile_manager = ProfileManager()
+
+    if not skip_init:
+        start_metrics_server()
 
     return Agent(
         llm=llm,
@@ -119,27 +156,46 @@ def build_orchestrator() -> AppContainer:
     llm = OpenAILLM(audit_logger=audit_logger)
 
     # ===== Skill 提供者（抽象接口，可替换实现） =====
-    skill_provider = FileSkillProvider(
-        skills_dir=Path(__file__).resolve().parents[0] / "infrastructure" / "skills" / "builtin"
-    )
+    skill_provider = FileSkillProvider(skills_dir=settings.skills_dir)
+
+    # ===== MCP 基础设施 =====
+    mcp_catalog = MCPCatalog(settings.mcp_servers_dir)
+    mcp_runtime = MCPProxyRuntime(catalog=mcp_catalog)
+
+    # ===== 工具基础设施（全局单例，供所有 Agent 共享） =====
+    tool_registry, tool_executor = _build_tool_infrastructure(mcp_catalog, mcp_runtime, audit_logger)
+
+    # ===== 会话管理（全局单例） =====
+    session_store = SessionManager()
 
     # ===== 内置智能体配置（从 YAML 加载，零硬编码） =====
-    builtin_loader = BuiltinAgentLoader(
-        builtin_dir=Path(__file__).resolve().parents[0] / "application" / "builtin_agents"
-    )
+    builtin_loader = BuiltinAgentLoader(builtin_dir=settings.builtin_agents_dir)
     builtin_configs = builtin_loader.load_all()
 
     # ===== 旅行智能体的特殊构造器（需要完整 Agent 主循环） =====
-    # 先构建原有旅游 Agent（代码完全保留）
-    travel_agent_core = _build_travel_agent_core(llm, audit_logger)
+    travel_agent_core = _build_travel_agent_core(
+        llm=llm,
+        audit_logger=audit_logger,
+        tool_registry=tool_registry,
+        tool_executor=tool_executor,
+        session_store=session_store,
+        mcp_catalog=mcp_catalog,
+        mcp_runtime=mcp_runtime,
+        skip_init=True,
+    )
 
     def travel_builder(config: AgentConfig) -> TravelAgent:
         return TravelAgent(travel_agent_core)
 
-    # ===== 工厂 =====
+    # ===== 工厂（注入所有全局依赖） =====
     factory = AgentFactory(
         llm=llm,
         skill_provider=skill_provider,
+        tool_registry=tool_registry,
+        tool_executor=tool_executor,
+        session_store=session_store,
+        mcp_runtime=mcp_runtime,
+        audit_logger=audit_logger,
         builtin_builders={"travel": travel_builder},
     )
 
@@ -147,12 +203,16 @@ def build_orchestrator() -> AppContainer:
     custom_repo = CustomAgentRepository()
 
     # ===== 总调度 =====
+    # Phase 3: 默认智能体从 travel 切换为 yunhe（云合）。
+    # yunhe 模式下，OrchestratorAgent 本身作为云合执行三层决策：
+    # Tier 0（快路径）→ Tier 1（function calling 委派）→ Tier 2（委派执行）。
+    # 如需灰度回退，将 default_agent 改回 "travel" 即可恢复 prompt 路由模式。
     orchestrator = OrchestratorAgent(
         llm=llm,
         factory=factory,
         builtin_configs=builtin_configs,
         custom_repo=custom_repo,
-        default_agent="travel",
+        default_agent="yunhe",
     )
 
     return AppContainer(
@@ -160,4 +220,6 @@ def build_orchestrator() -> AppContainer:
         skill_provider=skill_provider,
         builtin_configs=builtin_configs,
         custom_repo=custom_repo,
+        mcp_runtime=mcp_runtime,
+        mcp_catalog=mcp_catalog,
     )

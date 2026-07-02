@@ -1,0 +1,22 @@
+{
+  "name": "create_todo",
+  "description": "创建企业微信待办事项",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "待办标题"
+      },
+      "description": {
+        "type": "string",
+        "description": "待办详情"
+      },
+      "assignee": {
+        "type": "string",
+        "description": "负责人"
+      }
+    },
+    "required": ["title"]
+  }
+}

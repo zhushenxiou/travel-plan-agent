@@ -8,6 +8,8 @@ import { SharedItinerary } from './pages/SharedItinerary'
 import { AlbumPage } from './pages/AlbumPage'
 import { AgentCenter } from './pages/AgentCenter'
 import { AgentEditor } from './pages/AgentEditor'
+import { SkillCenter } from './pages/SkillCenter'
+import { MCPCenter } from './pages/MCPCenter'
 import { useAuthStore } from './hooks/useAuthStore'
 import { AgentRouteGuard } from './components/AgentRouteGuard'
 
@@ -73,6 +75,26 @@ function App() {
           element={
             <PrivateRoute>
               <MemoryPage />
+            </PrivateRoute>
+          }
+        />
+
+        {/* Skill 中心 */}
+        <Route
+          path="/skills"
+          element={
+            <PrivateRoute>
+              <SkillCenter />
+            </PrivateRoute>
+          }
+        />
+
+        {/* MCP 中心 */}
+        <Route
+          path="/mcps"
+          element={
+            <PrivateRoute>
+              <MCPCenter />
             </PrivateRoute>
           }
         />

@@ -149,6 +149,35 @@ class ReasoningEngine:
         self._audit_user_id = user_id
         self._audit_trace_id = trace_id
 
+    async def _execute_tool_safely(
+        self, tool_name: str, arguments: dict, tool_call_id: str = ""
+    ) -> dict:
+        """安全执行工具，带完整的错误处理与统一返回格式。
+
+        不会让 LLM 看到原始 Python traceback，
+        而是返回结构化的错误信息供 LLM 决策（重试/换工具/告诉用户）。
+        """
+        from domain.shared.types import ToolCall
+        call = ToolCall(name=tool_name, arguments=arguments, call_id=tool_call_id)
+
+        try:
+            results = await self._tool_executor.execute([call])
+            if results:
+                return results[0]
+            return {"error": "no_result", "tool": tool_name}
+        except TimeoutError:
+            logger.warning("Tool timeout: %s(%s)", tool_name, arguments)
+            return {"error": "timeout", "tool": tool_name,
+                    "message": "工具执行超时，请稍后重试或尝试其他工具"}
+        except ConnectionError as e:
+            logger.warning("Tool connection failed: %s: %s", tool_name, e)
+            return {"error": "connection_failed", "tool": tool_name,
+                    "message": f"工具 {tool_name} 连接失败，请稍后重试"}
+        except Exception as e:
+            logger.error("Tool execution failed: %s: %s", tool_name, e)
+            return {"error": "execution_failed", "tool": tool_name,
+                    "message": f"工具 {tool_name} 执行出错：{str(e)[:200]}"}
+
     def _record_trace(self, trace: TraceStep) -> None:
         self.last_trace.append(trace)
         if self._audit_logger:
@@ -164,30 +193,53 @@ class ReasoningEngine:
                 system_note=trace.system_note,
             )
 
-    def _build_tools_schema(self) -> list[dict[str, Any]]:
+    def _build_tools_schema(
+        self, disclosed_tools: set[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """构建传给 LLM 的 native tools schema。
+
+        当 disclosed_tools 为 None 时：全量构建（向后兼容，缓存全量结果）。
+        当 disclosed_tools 非空时：仅包含指定子集工具（不缓存，每次都动态构建）。
+        """
+        # disclosed 非空时绕过缓存，动态构建子集
+        if disclosed_tools is not None:
+            schema: list[dict[str, Any]] = []
+            for name in disclosed_tools:
+                if name in self._tool_registry._tools:
+                    tool = self._tool_registry._tools[name]
+                    func_def = self._build_func_def(tool.spec)
+                    schema.append(func_def)
+            return schema
+
+        # 全量模式：使用缓存
         if self._tools_schema is not None:
             return self._tools_schema
-        schema: list[dict[str, Any]] = []
+        schema = []
         for name in self._tool_registry._tools:
             tool = self._tool_registry._tools[name]
-            spec = tool.spec
-            func_def: dict[str, Any] = {
-                "type": "function",
-                "function": {
-                    "name": spec.name,
-                    "description": spec.description,
-                },
-            }
-            if spec.parameters:
-                func_def["function"]["parameters"] = spec.parameters
-            else:
-                func_def["function"]["parameters"] = {
-                    "type": "object",
-                    "properties": {},
-                }
+            func_def = self._build_func_def(tool.spec)
             schema.append(func_def)
         self._tools_schema = schema
         return schema
+
+    @staticmethod
+    def _build_func_def(spec: Any) -> dict[str, Any]:
+        """构建单个工具的 function definition。"""
+        func_def: dict[str, Any] = {
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+            },
+        }
+        if hasattr(spec, "parameters") and spec.parameters:
+            func_def["function"]["parameters"] = spec.parameters
+        else:
+            func_def["function"]["parameters"] = {
+                "type": "object",
+                "properties": {},
+            }
+        return func_def
 
     def _try_parse_tool_calls_from_text(self, text: str) -> list[ToolCall] | None:
         """尝试从模型输出的文本中解析出 tool_calls。

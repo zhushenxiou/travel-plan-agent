@@ -1,11 +1,10 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Bot, Brain, LogOut, Sparkles } from 'lucide-react'
+import { Bot, Brain, LogOut, Sparkles, Wrench, Plug } from 'lucide-react'
 import { useAuthStore } from '../hooks/useAuthStore'
 
 /**
  * 左侧导航栏 — 通用智能体框架的主导航。
- * 只放模块入口：Agent 中心、记忆、退出登录。
- * 不含会话列表（会话列表在 SessionSidebar，位于本栏右侧）。
+ * 模块入口：Agent 中心、Skill 中心、MCP 中心、记忆、退出登录。
  */
 export function NavSidebar() {
   const navigate = useNavigate()
@@ -15,6 +14,8 @@ export function NavSidebar() {
 
   const isAgentCenter = location.pathname.startsWith('/agents')
   const isMemories = location.pathname.startsWith('/memories')
+  const isSkills = location.pathname.startsWith('/skills')
+  const isMcps = location.pathname.startsWith('/mcps')
 
   return (
     <div className="w-56 bg-white border-r border-slate-200 flex flex-col flex-shrink-0">
@@ -43,6 +44,28 @@ export function NavSidebar() {
         >
           <Bot size={18} className="flex-shrink-0" />
           Agent 中心
+        </button>
+        <button
+          onClick={() => navigate('/skills')}
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+            isSkills
+              ? 'bg-emerald-50 text-emerald-700'
+              : 'text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <Wrench size={18} className="flex-shrink-0" />
+          Skill 中心
+        </button>
+        <button
+          onClick={() => navigate('/mcps')}
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+            isMcps
+              ? 'bg-amber-50 text-amber-700'
+              : 'text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <Plug size={18} className="flex-shrink-0" />
+          MCP 中心
         </button>
         <button
           onClick={() => navigate('/memories')}

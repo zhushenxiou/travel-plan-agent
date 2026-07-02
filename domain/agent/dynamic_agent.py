@@ -1,31 +1,33 @@
 from __future__ import annotations
+import json
 import logging
+import uuid
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from domain.agent.base import BaseAgent
+from domain.agent.schema import AgentConfig
 from infrastructure.llm.openai import OpenAILLM
 from infrastructure.skills.provider import SkillProvider
-from domain.agent.schema import AgentConfig
+from infrastructure.tools.executor import ToolExecutor
+from infrastructure.tools.registry import ToolRegistry
+from infrastructure.tools.base import bind_tool
+from infrastructure.mcp.runtime import MCPProxyRuntime
+from domain.user.session.manager import SessionManager
+from domain.shared.audit.logger import AuditLogger
+from domain.reasoning.engine import ReasoningEngine, AskUserNeeded, ConfirmationNeeded
 
 logger = logging.getLogger(__name__)
 
 
 class DynamicAgent(BaseAgent):
-    """通用动态智能体 — 由 AgentConfig 驱动，不硬编码任何字段。
+    """通用动态智能体 — 由 AgentConfig 驱动，具备完整的 ReAct 工具执行能力。
 
-    用于用户自定义智能体。
-    构造函数只接收 AgentConfig + 依赖（LLM、SkillProvider），
-    不再接收 10 个独立字段。
-
-    【商用限制 — 当前实现的不足】
-    1. 无会话记忆：每次调用都是独立的 system+user，不保留对话历史。
-       商用产品应注入 SessionManager，维护多轮对话上下文。
-    2. 无工具执行：_build_prompt 只把 skill 描述注入 prompt，
-       但不实际调用 skill 对应的工具。用户配置了 amap-maps 也无法真正查地图。
-       后续应接入 ToolExecutor，根据 skills 列表加载对应工具。
-    3. 无审计：不记录 LLM 调用日志。
-
-    这些是 MVP 阶段的已知限制，商用前必须补齐。
+    与旧版（仅 prompt 注入）的关键变化：
+    1. 根据 config.skills / config.mcp_servers 筛选工具子集
+    2. 通过 ReasoningEngine 执行完整的 ReAct 循环（推理 → 工具调用 → 观察）
+    3. 通过 SessionManager 管理多轮对话上下文
+    4. 通过 AuditLogger 记录 LLM 与工具调用
     """
 
     def __init__(
@@ -34,10 +36,48 @@ class DynamicAgent(BaseAgent):
         config: AgentConfig,
         llm: OpenAILLM,
         skill_provider: SkillProvider,
+        tool_registry: ToolRegistry,
+        tool_executor: ToolExecutor,
+        session_store: SessionManager,
+        mcp_runtime: MCPProxyRuntime,
+        audit_logger: AuditLogger,
     ) -> None:
         self._config = config
         self._llm = llm
         self._skill_provider = skill_provider
+        self._session_store = session_store
+        self._audit_logger = audit_logger
+        self._mcp_runtime = mcp_runtime
+
+        # 解析工具名列表
+        self._tool_names = self._resolve_tools(config, skill_provider, mcp_runtime)
+
+        # 从全局 registry 中筛选工具子集，构建专属 ToolRegistry
+        self._agent_registry = ToolRegistry()
+        for name in self._tool_names:
+            if tool_registry.has(name):
+                tool = tool_registry.get(name)
+                self._agent_registry.register(tool)
+
+        # 使用专属 ToolExecutor（绑定子集 registry + 全局 policy/audit）
+        self._tool_executor = ToolExecutor(
+            registry=self._agent_registry,
+            policy=tool_executor._policy,
+            audit_logger=audit_logger,
+        )
+
+        # 推理引擎（只持有子集工具）
+        self._reasoning = ReasoningEngine(
+            llm=llm,
+            tool_registry=self._agent_registry,
+            tool_executor=self._tool_executor,
+            audit_logger=audit_logger,
+        )
+
+        logger.info(
+            "DynamicAgent [%s] initialized: skills=%s mcp=%s resolved_tools=%s",
+            config.id, config.skills, config.mcp_servers, self._tool_names,
+        )
 
     @property
     def name(self) -> str:
@@ -47,35 +87,45 @@ class DynamicAgent(BaseAgent):
     def description(self) -> str:
         return self._config.description
 
-    async def chat(self, *, session_id: str, message: str, user_id: str | None = None, **kwargs) -> dict:
-        prompt = self._build_prompt()
-        # 注意：OpenAILLM 的方法是 complete / stream_complete，不是 chat / chat_stream
-        reply = await self._llm.complete(
-            system=prompt,
-            messages=[{"role": "user", "content": message}],
-        )
-        return {
-            "status": "completed",
-            "reply": reply,
-            "active_agent": self._config.id,
-            "agent_actions": [],
-        }
+    def _resolve_tools(
+        self,
+        config: AgentConfig,
+        skill_provider: SkillProvider,
+        mcp_runtime: MCPProxyRuntime,
+    ) -> list[str]:
+        """根据 config.skills 和 config.mcp_servers 解析需要的工具名。
 
-    async def chat_stream(self, *, session_id: str, message: str, user_id: str | None = None, **kwargs) -> AsyncGenerator[dict, None]:
-        yield {"type": "route", "data": self._config.id}
-        yield {"type": "status", "data": "thinking"}
+        1. 从 skill 中提取绑定的工具（openai.yaml 中 interface.tools）
+        2. 从 MCP server 中提取工具（通过 catalog.list_tool_refs()）
+        返回去重后的工具名列表。
+        """
+        tool_names: list[str] = []
 
-        prompt = self._build_prompt()
-        async for chunk in self._llm.stream_complete(
-            system=prompt,
-            messages=[{"role": "user", "content": message}],
-        ):
-            yield {"type": "chunk", "data": chunk}
+        # 1. 从 skill 中提取绑定的工具
+        for skill_name in config.skills:
+            skill = skill_provider.get_skill(skill_name)
+            if skill and skill.tools:
+                tool_names.extend(skill.tools)
+                logger.debug("Skill [%s] provides tools: %s", skill_name, skill.tools)
 
-        yield {"type": "done", "data": "completed"}
+        # 2. 从 MCP server 中提取工具
+        for server_id in config.mcp_servers:
+            for ref in mcp_runtime.catalog.list_tool_refs():
+                if ref.server_identifier == server_id:
+                    tool_names.append(ref.proxy_name)
+                    logger.debug("MCP [%s] provides tool: %s", server_id, ref.proxy_name)
 
-    def _build_prompt(self) -> str:
-        """构建 system prompt，注入 skill 说明。"""
+        # 去重并保持顺序
+        seen: set[str] = set()
+        unique: list[str] = []
+        for name in tool_names:
+            if name not in seen:
+                seen.add(name)
+                unique.append(name)
+        return unique
+
+    def _build_system_prompt(self) -> str:
+        """构建 system prompt，注入 skill 说明和 MCP 描述。"""
         prompt = self._config.system_prompt
 
         if self._config.skills:
@@ -86,5 +136,120 @@ class DynamicAgent(BaseAgent):
                     prompt += f"\n### {skill.display_name}\n"
                     prompt += f"{skill.description}\n"
                     prompt += f"提示: {skill.default_prompt}\n"
+                    if skill.tools:
+                        prompt += f"工具: {', '.join(skill.tools)}\n"
+
+        if self._config.mcp_servers:
+            prompt += "\n\n## 可用 MCP 服务\n"
+            for server_id in self._config.mcp_servers:
+                prompt += f"- {server_id}\n"
 
         return prompt
+
+    async def chat(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        user_id: str | None = None,
+        trace_id: str = "",
+        **kwargs,
+    ) -> dict:
+        memory_scope = str(user_id or session_id)
+        trace_id = trace_id or uuid.uuid4().hex[:16]
+
+        self._llm.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
+        self._reasoning.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
+
+        # 加载会话历史
+        session = self._session_store.get(session_id)
+        session.append("user", message)
+
+        system_prompt = self._build_system_prompt()
+
+        status = "final_answer"
+        try:
+            reply = await self._reasoning.run(
+                system_prompt=system_prompt,
+                user_message=message,
+                force_tool=False,
+            )
+        except AskUserNeeded as exc:
+            reply = exc.question
+            status = "need_input"
+        except ConfirmationNeeded as exc:
+            reply = exc.prompt
+            status = "need_input"
+        except Exception as e:
+            logger.error("DynamicAgent chat error: %s", e)
+            reply = f"抱歉，处理您的请求时出现了错误：{e}"
+            status = "final_answer"
+
+        # 保存会话
+        session.append("assistant", reply)
+        self._session_store.save(session)
+
+        return {
+            "status": status,
+            "reply": reply,
+            "active_agent": self._config.id,
+            "agent_actions": [],
+        }
+
+    async def chat_stream(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        user_id: str | None = None,
+        trace_id: str = "",
+        **kwargs,
+    ) -> AsyncGenerator[dict, None]:
+        memory_scope = str(user_id or session_id)
+        trace_id = trace_id or uuid.uuid4().hex[:16]
+
+        self._llm.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
+        self._reasoning.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
+
+        # 加载会话历史
+        session = self._session_store.get(session_id)
+        session.append("user", message)
+
+        # 发送路由事件
+        yield {"type": "route", "data": self._config.id}
+        yield {"type": "status", "data": "thinking"}
+
+        system_prompt = self._build_system_prompt()
+
+        full_reply = ""
+        status = "final_answer"
+        try:
+            async for chunk in self._reasoning.run_stream(
+                system_prompt=system_prompt,
+                user_message=message,
+                force_tool=False,
+            ):
+                if chunk.startswith("__status__:"):
+                    # 状态通知，转为 tool_status 事件
+                    yield {"type": "tool_status", "data": chunk[len("__status__:"):]}
+                else:
+                    full_reply += chunk
+                    yield {"type": "chunk", "data": chunk}
+        except AskUserNeeded as exc:
+            full_reply = exc.question
+            status = "need_input"
+            yield {"type": "chunk", "data": full_reply}
+        except ConfirmationNeeded as exc:
+            full_reply = exc.prompt
+            status = "need_input"
+            yield {"type": "chunk", "data": full_reply}
+        except Exception as e:
+            logger.error("DynamicAgent chat_stream error: %s", e)
+            full_reply = f"抱歉，处理您的请求时出现了错误：{e}"
+            yield {"type": "chunk", "data": full_reply}
+
+        # 保存会话
+        session.append("assistant", full_reply)
+        self._session_store.save(session)
+
+        yield {"type": "done", "data": status}

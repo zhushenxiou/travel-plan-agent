@@ -1,0 +1,14 @@
+{
+  "name": "get_content",
+  "description": "获取页面文本内容",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "要获取内容的页面 URL"
+      }
+    },
+    "required": ["url"]
+  }
+}

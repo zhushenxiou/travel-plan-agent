@@ -45,6 +45,7 @@ class BuiltinAgentLoader:
             icon=data.get("icon", "🤖"),
             system_prompt=data.get("system_prompt", ""),
             skills=data.get("skills", []),
+            mcp_servers=data.get("mcp_servers", []),
             welcome_message=data.get("welcome_message", ""),
             temperature=data.get("temperature", 0.7),
             source="builtin",

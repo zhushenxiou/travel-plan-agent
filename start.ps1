@@ -70,8 +70,8 @@ if (-not $SkipInstall) {
     Write-Step "检查 Python 依赖"
     & $Python -c "import fastapi, uvicorn, openai" 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "安装 Python 依赖（requirements.txt）"
-        & $Python -m pip install -r requirements.txt
+        Write-Warn "安装 Python 依赖（pyproject.toml）"
+        & $Python -m pip install -e ".[dev]"
         if ($LASTEXITCODE -ne 0) { Write-Err "Python 依赖安装失败"; exit 1 }
     }
     Write-Ok "Python 依赖就绪"

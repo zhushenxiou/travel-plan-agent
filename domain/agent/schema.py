@@ -15,13 +15,18 @@ class AgentConfig:
     icon: str = "🤖"                  # 图标 emoji
     system_prompt: str = ""           # 系统提示词
     skills: list[str] = field(default_factory=list)  # 关联 skill 名称
+    mcp_servers: list[str] = field(default_factory=list)  # 新增：绑定的 MCP server ID
     welcome_message: str = ""         # 欢迎语
     temperature: float = 0.7          # LLM 温度
     source: str = "builtin"           # 来源：builtin / custom
     is_public: bool = False           # 是否公开（仅自定义）
+    status: str = "published"         # 智能体状态：draft / published（仅自定义）
     user_id: str | None = None        # 创建者（仅自定义）
     created_at: str = ""
     updated_at: str = ""
+    # Phase 5: 多语言支持（面向全球社区）
+    system_prompt_i18n: dict[str, str] = field(default_factory=dict)  # {"zh": "...", "en": "..."}
+    description_i18n: dict[str, str] = field(default_factory=dict)    # {"zh": "...", "en": "..."}
 
 
 @dataclass
@@ -34,3 +39,5 @@ class SkillInfo:
     requires_env: list[str]           # 需要的环境变量
     env_configured: bool = False      # 环境变量是否已配置
     icon: str = "🔧"                  # 图标
+    tools: list[str] = field(default_factory=list)   # 新增：该 skill 绑定的工具名
+    category: str = "general"                        # 新增：分类

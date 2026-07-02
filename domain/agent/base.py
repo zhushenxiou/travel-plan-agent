@@ -31,7 +31,22 @@ class BaseAgent(ABC):
         user_id: str | None = None,
         **kwargs,  # 接受 agent_id 等额外参数，子类按需使用
     ) -> dict:
-        """同步对话，返回 {reply, active_agent, agent_actions, ...}"""
+        """同步对话。
+
+        返回值约定：
+        {
+            "status": "final_answer" | "need_input" | "cannot_handle",
+            "reply": "回复内容",
+            "missing_info": ["field1", "field2"],  # 仅 need_input 时
+            "active_agent": "agent_id",
+            "agent_actions": [...],
+        }
+
+        说明：
+        - "final_answer": 任务完成（默认值，向后兼容。TravelAgent 返回 "completed" 也会被云合兼容）
+        - "need_input": 需要用户补充信息，云合保持委派上下文
+        - "cannot_handle": 无法处理（如用户切换话题），云合释放委派并重新接手
+        """
 
     @abstractmethod
     async def chat_stream(

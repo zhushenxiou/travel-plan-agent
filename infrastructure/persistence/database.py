@@ -5,6 +5,7 @@ import logging
 import sqlite3
 from pathlib import Path
 from threading import local
+from typing import Any
 
 from config import settings
 
@@ -92,6 +93,61 @@ def _run_migrations(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_custom_agents_public ON custom_agents(is_public)")
     conn.commit()
     logger.info("Migration: ensured custom_agents table exists")
+
+    # 新增 mcp_servers 列（try/except 兼容已存在列）
+    try:
+        ca_cols = {row[1] for row in conn.execute("PRAGMA table_info(custom_agents)").fetchall()}
+        if "mcp_servers" not in ca_cols:
+            conn.execute("ALTER TABLE custom_agents ADD COLUMN mcp_servers TEXT DEFAULT '[]'")
+            conn.commit()
+            logger.info("Migration: added mcp_servers to custom_agents")
+        if "status" not in ca_cols:
+            conn.execute("ALTER TABLE custom_agents ADD COLUMN status TEXT DEFAULT 'published'")
+            conn.commit()
+            logger.info("Migration: added status to custom_agents")
+    except Exception:
+        logger.info("Migration: custom_agents columns already exist (skipped)")
+
+    # sessions 表增加委派上下文字段（Phase 3 需要，提前迁移）
+    try:
+        s_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "delegation_agent_id" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN delegation_agent_id TEXT DEFAULT NULL")
+            conn.commit()
+            logger.info("Migration: added delegation_agent_id to sessions")
+        if "delegation_started_at" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN delegation_started_at REAL DEFAULT NULL")
+            conn.commit()
+            logger.info("Migration: added delegation_started_at to sessions")
+        if "delegation_last_interaction" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN delegation_last_interaction REAL DEFAULT NULL")
+            conn.commit()
+            logger.info("Migration: added delegation_last_interaction to sessions")
+        if "disclosed_tools" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN disclosed_tools TEXT DEFAULT '[]'")
+            conn.commit()
+            logger.info("Migration: added disclosed_tools to sessions")
+    except Exception:
+        logger.info("Migration: sessions delegation/disclosed columns already exist (skipped)")
+
+    # quality_issues 表（Phase 4 反馈机制）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quality_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            rating TEXT NOT NULL DEFAULT 'bad',
+            issue_type TEXT NOT NULL DEFAULT 'other',
+            comment TEXT DEFAULT '',
+            agent_id TEXT DEFAULT '',
+            message_snippet TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_quality_issues_user ON quality_issues(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_quality_issues_rating ON quality_issues(rating)")
+    conn.commit()
+    logger.info("Migration: ensured quality_issues table exists")
 
 
 _SCHEMA = """

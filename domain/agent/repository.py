@@ -21,7 +21,8 @@ class CustomAgentRepository:
 
     _ALLOWED_FIELDS = {
         "name", "description", "icon", "system_prompt", "skills",
-        "welcome_message", "temperature", "is_public",
+        "mcp_servers", "welcome_message", "temperature", "is_public",
+        "status",
     }
 
     def create(self, user_id: str, **fields) -> AgentConfig:
@@ -33,8 +34,8 @@ class CustomAgentRepository:
             conn.execute(
                 """INSERT INTO custom_agents
                    (id, user_id, name, description, icon, system_prompt, skills,
-                    welcome_message, temperature, is_public, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    mcp_servers, status, welcome_message, temperature, is_public, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     agent_id, user_id,
                     fields.get("name", ""),
@@ -42,6 +43,8 @@ class CustomAgentRepository:
                     fields.get("icon", "🤖"),
                     fields.get("system_prompt", ""),
                     json.dumps(fields.get("skills", [])),
+                    json.dumps(fields.get("mcp_servers", [])),
+                    fields.get("status", "published"),
                     fields.get("welcome_message", ""),
                     fields.get("temperature", 0.7),
                     fields.get("is_public", False),
@@ -79,7 +82,19 @@ class CustomAgentRepository:
         conn = get_connection()
         try:
             rows = conn.execute(
-                "SELECT * FROM custom_agents WHERE is_public = 1 ORDER BY created_at DESC"
+                "SELECT * FROM custom_agents WHERE is_public = 1 AND status = 'published' ORDER BY created_at DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self._row_to_config(row) for row in rows]
+
+    def list_published_by_user(self, user_id: str) -> list[AgentConfig]:
+        """列出用户已发布的智能体（AgentCenter 只展示 published）。"""
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM custom_agents WHERE user_id = ? AND status = 'published' ORDER BY updated_at DESC",
+                (user_id,),
             ).fetchall()
         finally:
             conn.close()
@@ -93,6 +108,8 @@ class CustomAgentRepository:
 
         if "skills" in safe_fields:
             safe_fields["skills"] = json.dumps(safe_fields["skills"])
+        if "mcp_servers" in safe_fields:
+            safe_fields["mcp_servers"] = json.dumps(safe_fields["mcp_servers"])
         safe_fields["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
 
         set_clause = ", ".join(f"{k} = ?" for k in safe_fields)
@@ -128,10 +145,12 @@ class CustomAgentRepository:
             icon=row["icon"],
             system_prompt=row["system_prompt"],
             skills=json.loads(row["skills"]),
+            mcp_servers=json.loads(row["mcp_servers"] or "[]"),
             welcome_message=row["welcome_message"],
             temperature=row["temperature"],
             source="custom",
             is_public=bool(row["is_public"]),
+            status=row["status"] if "status" in row.keys() else "published",
             user_id=row["user_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],

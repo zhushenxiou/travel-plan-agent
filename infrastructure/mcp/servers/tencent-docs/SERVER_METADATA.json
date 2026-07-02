@@ -1,0 +1,6 @@
+{
+  "serverIdentifier": "tencent-docs",
+  "serverName": "腾讯文档",
+  "serverDescription": "腾讯文档读写：创建、编辑、搜索文档",
+  "serverIcon": "📝"
+}

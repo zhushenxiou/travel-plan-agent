@@ -956,6 +956,8 @@ export interface SkillInfo {
   requires_env: string[]
   env_configured: boolean
   icon: string
+  tools?: string[]
+  category?: string
 }
 
 export interface AgentInfo {
@@ -965,12 +967,30 @@ export interface AgentInfo {
   icon: string
   source: 'builtin' | 'custom'    // 与后端 AgentConfig.source 对齐
   skills?: string[]
+  mcp_servers?: string[]
   is_public?: boolean
+  status?: string                 // Phase 4: draft / published
   created_at?: string
   system_prompt?: string
   welcome_message?: string
   temperature?: number
   user_id?: string
+}
+
+export interface MCPToolInfo {
+  name: string
+  description: string
+  proxy_name: string
+  input_schema: any
+  adapter_available: boolean
+}
+
+export interface MCPServerInfo {
+  identifier: string
+  name: string
+  description: string
+  instructions: string
+  tools: MCPToolInfo[]
 }
 
 // 获取 skill 列表
@@ -979,6 +999,28 @@ export async function fetchSkills(): Promise<SkillInfo[]> {
   if (!res.ok) throw new Error('获取 Skill 列表失败')
   const data = await res.json()
   return data.skills
+}
+
+// 获取单个 skill 详情
+export async function fetchSkillDetail(name: string): Promise<SkillInfo> {
+  const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 Skill 详情失败')
+  return res.json()
+}
+
+// 获取 MCP Server 列表
+export async function fetchMCPServers(): Promise<MCPServerInfo[]> {
+  const res = await fetch(`${API_BASE}/mcp/servers`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 MCP 列表失败')
+  const data = await res.json()
+  return data.servers
+}
+
+// 获取单个 MCP Server 详情
+export async function fetchMCPServer(serverId: string): Promise<MCPServerInfo> {
+  const res = await fetch(`${API_BASE}/mcp/servers/${encodeURIComponent(serverId)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 MCP 详情失败')
+  return res.json()
 }
 
 // 获取智能体列表
@@ -1030,4 +1072,17 @@ export async function deleteCustomAgent(agentId: string): Promise<void> {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || '删除智能体失败')
   }
+}
+
+// 克隆社区智能体
+export async function cloneCustomAgent(agentId: string): Promise<AgentInfo> {
+  const res = await fetch(`${API_BASE}/agents/custom/${agentId}/clone`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '克隆智能体失败')
+  }
+  return res.json()
 }

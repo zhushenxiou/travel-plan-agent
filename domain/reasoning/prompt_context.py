@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from domain.reasoning.contxt_manager import PreparedContext
+from domain.reasoning.context_manager import PreparedContext
 from domain.shared.types import IntentResult
 
 

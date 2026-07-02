@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Edit2, Trash2, ArrowLeft } from 'lucide-react'
-import { fetchAgents, deleteCustomAgent, AgentInfo } from '../utils/api'
+import { Plus, Edit2, Trash2, ArrowLeft, Copy } from 'lucide-react'
+import { fetchAgents, deleteCustomAgent, cloneCustomAgent, AgentInfo } from '../utils/api'
 
 export function AgentCenter() {
   const navigate = useNavigate()
@@ -31,7 +31,6 @@ export function AgentCenter() {
   }, [])
 
   const handleUseAgent = (agentId: string) => {
-    // 跳转到对话页，通过 query 参数指定智能体
     navigate(`/?agent=${encodeURIComponent(agentId)}`)
   }
 
@@ -42,6 +41,16 @@ export function AgentCenter() {
       await load()
     } catch (err) {
       alert(err instanceof Error ? err.message : '删除失败')
+    }
+  }
+
+  const handleClone = async (agentId: string) => {
+    try {
+      await cloneCustomAgent(agentId)
+      alert('克隆成功！已添加到"我的智能体"（草稿状态）')
+      await load()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '克隆失败')
     }
   }
 
@@ -106,7 +115,12 @@ export function AgentCenter() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {agents.custom.map(agent => (
               <div key={agent.id} className="border border-slate-200 rounded-lg p-4 bg-white hover:shadow-md transition-shadow">
-                <div className="text-4xl mb-2">{agent.icon}</div>
+                <div className="flex items-start justify-between mb-2">
+                  <div className="text-4xl">{agent.icon}</div>
+                  {agent.status === 'draft' && (
+                    <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">草稿</span>
+                  )}
+                </div>
                 <h3 className="font-semibold text-slate-800">{agent.name}</h3>
                 <p className="text-sm text-slate-500 mb-3 line-clamp-2">{agent.description}</p>
                 <div className="flex gap-2">
@@ -147,12 +161,22 @@ export function AgentCenter() {
                 <div className="text-4xl mb-2">{agent.icon}</div>
                 <h3 className="font-semibold text-slate-800">{agent.name}</h3>
                 <p className="text-sm text-slate-500 mb-3 line-clamp-2">{agent.description}</p>
-                <button
-                  onClick={() => handleUseAgent(agent.id)}
-                  className="w-full bg-sky-500 text-white py-2 rounded-lg hover:bg-sky-600 transition-colors text-sm font-medium"
-                >
-                  使用
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleUseAgent(agent.id)}
+                    className="flex-1 bg-sky-500 text-white py-2 rounded-lg hover:bg-sky-600 transition-colors text-sm font-medium"
+                  >
+                    使用
+                  </button>
+                  <button
+                    onClick={() => handleClone(agent.id)}
+                    className="flex-1 bg-emerald-50 text-emerald-600 py-2 rounded-lg hover:bg-emerald-100 transition-colors text-sm font-medium flex items-center justify-center gap-1"
+                    title="克隆到我的工作区"
+                  >
+                    <Copy size={14} />
+                    克隆
+                  </button>
+                </div>
               </div>
             ))}
           </div>

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from infrastructure.external.mcp.catalog import MCPCatalog, MCPServerInfo, MCPToolInfo, MCPToolRef, _proxy_name, _tokenize
+from infrastructure.mcp.catalog import MCPCatalog, MCPServerInfo, MCPToolInfo, MCPToolRef, _proxy_name, _tokenize
 
 
 class TestHelperFunctions:

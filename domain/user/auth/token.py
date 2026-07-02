@@ -5,6 +5,8 @@ import os
 import time
 from dataclasses import dataclass
 
+from infrastructure.persistence.database import get_connection
+
 
 @dataclass
 class TokenData:
@@ -14,26 +16,54 @@ class TokenData:
 
 
 _TOKEN_EXPIRY_SECONDS = 86400 * 7
-_token_store: dict[str, TokenData] = {}
+
+
+def _ensure_table() -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            expires_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id)")
+    conn.commit()
 
 
 def generate_token(user_id: str) -> str:
     raw = f"{user_id}:{os.urandom(16).hex()}:{time.time()}"
     token = hashlib.sha256(raw.encode()).hexdigest()
     expires_at = time.time() + _TOKEN_EXPIRY_SECONDS
-    _token_store[token] = TokenData(user_id=user_id, token=token, expires_at=expires_at)
+    _ensure_table()
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO auth_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+        (token, user_id, expires_at),
+    )
+    conn.commit()
     return token
 
 
 def verify_token(token: str) -> str | None:
-    data = _token_store.get(token)
-    if not data:
+    _ensure_table()
+    conn = get_connection()
+    now = time.time()
+    conn.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (now,))
+    conn.commit()
+    row = conn.execute(
+        "SELECT user_id, expires_at FROM auth_tokens WHERE token = ?",
+        (token,),
+    ).fetchone()
+    if not row or time.time() > row["expires_at"]:
         return None
-    if time.time() > data.expires_at:
-        _token_store.pop(token, None)
-        return None
-    return data.user_id
+    return row["user_id"]
 
 
 def revoke_token(token: str) -> None:
-    _token_store.pop(token, None)
+    _ensure_table()
+    conn = get_connection()
+    conn.execute("DELETE FROM auth_tokens WHERE token = ?", (token,))
+    conn.commit()

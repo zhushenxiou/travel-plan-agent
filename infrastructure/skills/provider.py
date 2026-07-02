@@ -73,6 +73,8 @@ class FileSkillProvider(SkillProvider):
 
         display_name = skill_name
         default_prompt = ""
+        tools: list[str] = []
+        category: str = "general"
 
         if yaml_file.exists():
             try:
@@ -80,6 +82,8 @@ class FileSkillProvider(SkillProvider):
                 interface = data.get("interface", {})
                 display_name = interface.get("display_name", skill_name)
                 default_prompt = interface.get("default_prompt", "")
+                tools = interface.get("tools", [])
+                category = interface.get("category", "general")
                 i18n = data.get("i18n", {})
                 zh = i18n.get("zh", {})
                 if zh.get("name"):
@@ -97,6 +101,8 @@ class FileSkillProvider(SkillProvider):
             requires_env=requires_env,
             env_configured=all(os.getenv(env) for env in requires_env),
             icon="🔧",
+            tools=tools,
+            category=category,
         )
 
     def list_skills(self) -> list[SkillInfo]:

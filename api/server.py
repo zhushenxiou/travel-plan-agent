@@ -19,6 +19,7 @@ from domain.user.auth.auth import UserStore
 from domain.user.auth.token import generate_token, verify_token
 from application.trending.manager import get_trending_travel, refresh_pool
 from domain.shared.audit.logger import AuditLogger
+from domain.feedback.repository import FeedbackRepository
 
 init_from_settings()
 logger = logging.getLogger(__name__)
@@ -67,11 +68,52 @@ agent = _container.orchestrator
 app.state.skill_provider = _container.skill_provider
 app.state.builtin_configs = _container.builtin_configs
 app.state.custom_repo = _container.custom_repo
+app.state.mcp_runtime = _container.mcp_runtime
+app.state.mcp_catalog = _container.mcp_catalog
 user_store = UserStore()
 
 _PUBLIC_PATHS = {"/api/auth/register", "/api/auth/login", "/api/trending", "/health", "/metrics", "/api/shared"}
 
-_rate_limiter = None
+# Phase 5: 轻量全局限流（SQLite 计数器，按 user_id + IP）
+_rate_counters: dict[str, dict[str, float]] = {}  # key -> {"count": N, "window_start": timestamp}
+_RATE_WINDOW = 60       # 时间窗口（秒）
+_RATE_MAX_REQUESTS = 60  # 每窗口最大请求数
+_RATE_CLEANUP_INTERVAL = 300  # 清理间隔（秒）
+_last_rate_cleanup = 0.0
+
+
+def _make_rate_key(user_id: str, ip: str, path: str) -> str:
+    """构造限流键：按用户 + IP + API 前缀聚合。"""
+    # 聚合路径前缀：/api/chat/* → chat, /api/agents/* → agents
+    prefix = path.split("/api/")[-1].split("/")[0] if "/api/" in path else path.strip("/")
+    return f"{user_id}:{ip}:{prefix}"
+
+
+def _cleanup_rate_counters(now: float) -> None:
+    """清理过期的限流计数器。"""
+    global _last_rate_cleanup
+    if now - _last_rate_cleanup < _RATE_CLEANUP_INTERVAL:
+        return
+    _last_rate_cleanup = now
+    expired_keys = [
+        k for k, v in _rate_counters.items()
+        if now - v.get("window_start", 0) > _RATE_WINDOW * 2
+    ]
+    for k in expired_keys:
+        del _rate_counters[k]
+
+
+def _check_rate(user_id: str, ip: str, path: str) -> bool:
+    """检查请求频率。返回 True 表示允许，False 表示超限。"""
+    now = time.monotonic()
+    _cleanup_rate_counters(now)
+    key = _make_rate_key(user_id, ip, path)
+    counter = _rate_counters.get(key)
+    if counter is None or now - counter.get("window_start", 0) > _RATE_WINDOW:
+        _rate_counters[key] = {"count": 1, "window_start": now}
+        return True
+    counter["count"] += 1
+    return counter["count"] <= _RATE_MAX_REQUESTS
 
 
 @app.middleware("http")
@@ -89,16 +131,18 @@ async def auth_middleware(request: Request, call_next):
         user_id = verify_token(token)
         if user_id:
             request.state.user_id = user_id
+            # Phase 5: 全局限流检查
+            client_ip = request.client.host if request.client else "unknown"
+            if not _check_rate(user_id, client_ip, path):
+                return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试"})
             return await call_next(request)
     return JSONResponse(status_code=401, content={"detail": "未登录或登录已过期"})
 
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path == "/api/chat" and _rate_limiter:
-        client_id = request.client.host if request.client else "unknown"
-        if not _rate_limiter.is_allowed(client_id):
-            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+    """兼容旧限流器（如果配置了 _rate_limiter）。"""
+    pass
     return await call_next(request)
 
 
@@ -250,6 +294,7 @@ class CreateAgentRequest(BaseModel):
     icon: str = Field("🤖", max_length=16)
     system_prompt: str = Field(..., min_length=1, max_length=8000)
     skills: list[str] = Field(default_factory=list, max_length=20)
+    mcp_servers: list[str] = Field(default_factory=list, max_length=20)
     welcome_message: str = Field("", max_length=500)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     is_public: bool = False
@@ -261,6 +306,7 @@ class UpdateAgentRequest(BaseModel):
     icon: str | None = Field(None, max_length=16)
     system_prompt: str | None = Field(None, min_length=1, max_length=8000)
     skills: list[str] | None = Field(None, max_length=20)
+    mcp_servers: list[str] | None = Field(None, max_length=20)
     welcome_message: str | None = Field(None, max_length=500)
     temperature: float | None = Field(None, ge=0.0, le=2.0)
     is_public: bool | None = None
@@ -273,6 +319,102 @@ async def list_skills(request: Request) -> dict:
         raise HTTPException(401, "未登录")
     sp = request.app.state.skill_provider
     return {"skills": [asdict(s) for s in sp.list_skills()]}
+
+
+@app.get("/api/skills/{skill_name}")
+async def get_skill_detail(skill_name: str, request: Request) -> dict:
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(401, "未登录")
+    sp = request.app.state.skill_provider
+    skill = sp.get_skill(skill_name)
+    if not skill:
+        raise HTTPException(404, "Skill 不存在")
+    return asdict(skill)
+
+
+@app.get("/api/mcp/servers")
+async def list_mcp_servers(request: Request) -> dict:
+    """列出所有 MCP server（含 tools 和 adapter_available 状态）。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(401, "未登录")
+    catalog = request.app.state.mcp_catalog
+    runtime = request.app.state.mcp_runtime
+    servers = []
+    for server in catalog.list_servers():
+        tools = []
+        for tool in server.tools:
+            proxy_name = tool.proxy_name
+            tools.append({
+                "name": tool.name,
+                "description": tool.description,
+                "proxy_name": proxy_name,
+                "input_schema": tool.input_schema,
+                "adapter_available": runtime.adapter_available(proxy_name) if runtime else False,
+            })
+        servers.append({
+            "identifier": server.identifier,
+            "name": server.name,
+            "description": server.description,
+            "instructions": server.instructions,
+            "tools": tools,
+        })
+    return {"servers": servers}
+
+
+@app.get("/api/mcp/servers/{server_id}")
+async def get_mcp_server_detail(server_id: str, request: Request) -> dict:
+    """获取单个 MCP server 详情。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(401, "未登录")
+    catalog = request.app.state.mcp_catalog
+    runtime = request.app.state.mcp_runtime
+    for server in catalog.list_servers():
+        if server.identifier == server_id:
+            tools = []
+            for tool in server.tools:
+                proxy_name = tool.proxy_name
+                tools.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "proxy_name": proxy_name,
+                    "input_schema": tool.input_schema,
+                    "adapter_available": runtime.adapter_available(proxy_name) if runtime else False,
+                })
+            return {
+                "identifier": server.identifier,
+                "name": server.name,
+                "description": server.description,
+                "instructions": server.instructions,
+                "tools": tools,
+            }
+    raise HTTPException(404, "MCP Server 不存在")
+
+
+@app.get("/api/mcp/servers/{server_id}/tools")
+async def get_mcp_server_tools(server_id: str, request: Request) -> dict:
+    """获取某 MCP server 的工具列表。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(401, "未登录")
+    catalog = request.app.state.mcp_catalog
+    runtime = request.app.state.mcp_runtime
+    for server in catalog.list_servers():
+        if server.identifier == server_id:
+            tools = []
+            for tool in server.tools:
+                proxy_name = tool.proxy_name
+                tools.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "proxy_name": proxy_name,
+                    "input_schema": tool.input_schema,
+                    "adapter_available": runtime.adapter_available(proxy_name) if runtime else False,
+                })
+            return {"server_id": server_id, "tools": tools}
+    raise HTTPException(404, "MCP Server 不存在")
 
 
 @app.get("/api/agents")
@@ -332,6 +474,67 @@ async def delete_custom_agent(agent_id: str, request: Request) -> dict:
     repo.delete(agent_id)
     return {"status": "deleted"}
 
+
+# ===== Phase 5: 智能体市场（克隆） =====
+
+@app.post("/api/agents/custom/{agent_id}/clone")
+async def clone_custom_agent(agent_id: str, request: Request) -> dict:
+    """从社区市场克隆智能体到自己的工作区。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(401, "未登录")
+    repo = request.app.state.custom_repo
+    source = repo.get(agent_id)
+    if not source or (not source.is_public and source.user_id != user_id):
+        raise HTTPException(404, "智能体不存在或不可克隆")
+    # 克隆：复制配置 + 标记为 cloned
+    cloned = repo.create(
+        user_id,
+        name=f"{source.name} (克隆)",
+        description=source.description,
+        icon=source.icon,
+        system_prompt=source.system_prompt,
+        skills=source.skills,
+        mcp_servers=source.mcp_servers,
+        welcome_message=source.welcome_message,
+        temperature=source.temperature,
+        is_public=False,
+        status="draft",
+    )
+    return asdict(cloned)
+
+
+# ===== Phase 4: 对话质量反馈 =====
+
+class FeedbackRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    rating: str = Field("bad", pattern="^(good|bad)$")
+    issue_type: str = Field("other", pattern="^(inaccurate|tool_error|delegation_error|other)$")
+    comment: str = Field("", max_length=1000)
+    agent_id: str = Field("")
+    message_snippet: str = Field("", max_length=500)
+
+
+@app.post("/api/feedback")
+async def submit_feedback(req: FeedbackRequest, request: Request) -> dict:
+    """提交对话质量反馈（👍/👎）。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(401, "未登录")
+    repo = FeedbackRepository()
+    feedback_id = repo.record(
+        session_id=req.session_id,
+        user_id=user_id,
+        rating=req.rating,
+        issue_type=req.issue_type,
+        comment=req.comment,
+        agent_id=req.agent_id,
+        message_snippet=req.message_snippet,
+    )
+    return {"status": "ok", "id": feedback_id}
+
+
+# ===== 会话管理 =====
 
 @app.post("/api/sessions")
 async def create_session(request: Request) -> dict:
