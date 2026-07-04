@@ -19,11 +19,12 @@
 - **行程对比** — 最多 4 个行程横向对比预算与活动
 - **相册管理** — 上传旅行照片，自动提取 EXIF 地理位置，地图标记，AI 生成游记
 - **记忆系统** — 双层记忆（短期/长期），自动提取用户偏好与旅行经验，支持记忆蒸馏
-- **Skill + MCP** — 模块化技能（高德地图、飞猪旅行）与 MCP 工具代理（Web 搜索），可扩展
+- **Skill + MCP** — 模块化技能（高德地图、飞猪旅行、arXiv 学术搜索）与 MCP 工具代理，可扩展
 - **情感检测** — 实时检测用户情绪，自动调整回复策略
 - **用户画像** — 根据交互记录自动构建用户偏好标签
 - **审计日志** — 记录 LLM 调用、工具执行、意图识别全链路审计事件
 - **热门推荐** — 实时抓取旅行热门话题与目的地推荐
+- **新闻收藏** — 收藏感兴趣的新闻话题，自动提取到短期记忆
 - **用户系统** — 注册/登录、Token 鉴权
 
 ---
@@ -146,10 +147,10 @@ graph TB
 
 | 层 | 技术 |
 |----|------|
-| 后端 | Python 3.11 · FastAPI · SQLite · OpenAI 兼容 API · 高德地图 Web服务 API |
+| 后端 | Python 3.11 · FastAPI · SQLite · OpenAI 兼容 API · 高德地图 Web服务 API · arXiv API |
 | 前端 | React 18 · TypeScript · Vite 6 · Tailwind CSS 3 · Zustand · Leaflet · Framer Motion · React Router 7 |
-| Agent | ReAct 推理循环 · 双层记忆 · 意图识别 · 情感检测 · MCP 工具代理 · Skill 系统 |
-| 基础设施 | Uvicorn · Prometheus · Redis（可选） · DDD 分层架构 |
+| Agent | ReAct 推理循环 · 双层记忆 · 意图识别 · 情感检测 · MCP 工具代理 · Skill 系统 · 记忆蒸馏 |
+| 基础设施 | Uvicorn · Prometheus · Redis（可选） · DDD 分层架构 · 异步任务调度 |
 
 ---
 
@@ -179,10 +180,12 @@ frontend/
 │   │   ├── Home.tsx          # 主对话页
 │   │   ├── ItineraryOverview.tsx  # 行程详情
 │   │   ├── ComparePage.tsx   # 行程对比
-│   │   ├── MemoryPage.tsx    # 记忆面板
+│   │   ├── FavoritesPage.tsx # 收藏页面（新闻/话题）
 │   │   ├── AlbumPage.tsx     # 相册管理
 │   │   └── SharedItinerary.tsx # 分享页（无需登录）
 │   ├── components/           # 通用组件
+│   │   ├── AppLayout.tsx     # 应用布局组件
+│   │   ├── TrendingBar.tsx   # 热门推荐栏
 │   │   ├── Chat/             # 对话组件
 │   │   ├── Album/            # 相册组件
 │   │   └── Itinerary/        # 行程组件
@@ -242,8 +245,10 @@ api.interceptors.response.use(
 | `POST /api/feedback` | 提交反馈（👍/👎） | 需登录 |
 | `GET /api/trending` | 热门推荐 | 公开 |
 | `GET /api/shared/:token` | 分享页 | 公开 |
+| `GET /api/news/favorites` | 新闻收藏列表 | 需登录 |
+| `POST /api/news/favorites` | 收藏新闻 | 需登录 |
 
-> 📘 **完整 API 文档**：[docs/api/API.md](docs/api/API.md) — 47 个接口，含 TypeScript 类型定义、SSE 流式处理代码示例、错误码说明。
+> 📘 **完整 API 文档**：[docs/api/API.md](docs/api/API.md) — 50 个接口，含 TypeScript 类型定义、SSE 流式处理代码示例、错误码说明。
 
 ---
 
@@ -310,39 +315,40 @@ chmod +x start.sh && ./start.sh
 ```
 claw7/
 ├── api/                    # API 路由与中间件
-│   ├── server.py           # FastAPI 主入口（47 个接口）
-│   ├── routes/             # 路由模块
-│   ├── middleware/         # 认证 / 限流中间件
+│   ├── server.py           # FastAPI 主入口（50 个接口，含认证/限流中间件）
 │   └── intl_coords.py      # 国际目的地坐标库
 ├── domain/                 # 领域层（DDD 核心业务逻辑）
 │   ├── agent/              # 多智能体系统（Orchestrator / TravelAgent / DynamicAgent）
-│   ├── travel/             # 旅行聚合（意图识别 / 行程 / 相册 / 工具）
+│   ├── travel/             # 旅行聚合（意图识别 / 行程 / 相册 / 工具 / 推理）
 │   ├── memory/             # 双层记忆（提取 / 蒸馏）
-│   ├── reasoning/          # ReAct 推理引擎（Prompt / 上下文管理）
+│   ├── reasoning/          # ReAct 推理引擎（已迁移到 domain/travel）
 │   ├── user/               # 用户聚合（认证 / 画像 / 情感 / 会话）
 │   └── shared/             # 共享组件（审计 / 监控 / 运行时）
 ├── infrastructure/         # 基础设施层
 │   ├── tools/              # 工具系统（注册表 / 执行器 / 策略 / 适配器）
 │   ├── skills/             # Skill 定义（高德地图 / 飞猪 / 自定义）
 │   ├── llm/                # LLM 适配器（OpenAI 兼容客户端）
-│   ├── persistence/        # 持久化（SQLite 数据库 / 健康检查）
+│   ├── persistence/        # 持久化（SQLite 数据库 / 健康检查 / 会话仓库）
 │   ├── mcp/                # MCP 工具代理（运行时 / 目录 / 服务器配置）
 │   └── external/           # 外部服务集成
 ├── application/            # 应用层
-│   └── builtin_agents/     # 内置智能体 YAML 配置（travel / yunhe）
+│   ├── builtin_agents/     # 内置智能体 YAML 配置（travel / yunhe / academic）
+│   ├── scheduler.py        # 调度器（记忆维护后台任务）
+│   └── trending/           # 热门推荐管理
 ├── config/                 # 配置层
 │   ├── settings.py          # Pydantic Settings 集中管理
 │   └── .env.example         # 环境变量模板
 ├── frontend/               # React 前端
-│   ├── src/pages/          # 页面（Home / ItineraryOverview / Memory / Compare / Album / Shared）
-│   ├── src/components/     # 通用组件（Chat / Album / Itinerary）
+│   ├── src/pages/          # 页面（Home / ItineraryOverview / Favorites / Album / Shared）
+│   ├── src/components/     # 通用组件（AppLayout / TrendingBar / Chat / Album / Itinerary）
 │   ├── src/hooks/          # Zustand 状态管理
 │   └── src/utils/          # 工具函数
 ├── tests/                  # 测试（16 个测试文件）
 ├── docs/                   # 文档
 │   ├── README.md           # 详细项目说明
-│   ├── api/API.md          # API 接口文档（47 个接口）
+│   ├── api/API.md          # API 接口文档（50 个接口）
 │   ├── architecture.md     # DDD 架构说明
+│   ├── PROJECT_MODULE_OVERVIEW.md  # 项目模块概览
 │   ├── MULTI_AGENT_DEV.md  # 多智能体开发指南
 │   └── UNIVERSAL_AGENT_DESIGN.md  # 通用 Agent 设计文档
 ├── app.py                  # Agent 构建（依赖注入容器）
@@ -380,8 +386,9 @@ claw7/
 ## 文档
 
 - [项目详细说明](docs/README.md)
-- [API 接口文档](docs/api/API.md) — 47 个接口完整文档
+- [API 接口文档](docs/api/API.md) — 50 个接口完整文档
 - [DDD 架构说明](docs/architecture.md)
+- [项目模块概览](docs/PROJECT_MODULE_OVERVIEW.md)
 - [多智能体开发指南](docs/MULTI_AGENT_DEV.md)
 - [通用 Agent 设计文档](docs/UNIVERSAL_AGENT_DESIGN.md)
 

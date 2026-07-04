@@ -1664,6 +1664,103 @@ async function apiCall<T>(fn: () => Promise<AxiosResponse<T>>): Promise<T> {
 
 ---
 
+## 15. 新闻收藏模块
+
+> 用户可以收藏感兴趣的新闻话题，系统会自动提取到短期记忆中，让智能体在对话中能引用用户关注的内容。
+
+### 15.1 获取新闻收藏列表
+
+```
+GET /api/news/favorites
+```
+
+**鉴权**：需登录
+
+```typescript
+interface NewsFavorite {
+  id: number;
+  title: string;           // 新闻标题
+  summary: string;         // 摘要
+  content: string;          // 完整内容
+  url: string;             // 原始链接
+  source: string;          // 来源（如 "微博"、"知乎"）
+  tag: string;             // 标签（如 "热门"、"科技"）
+  created_at: string;      // 收藏时间
+}
+
+const res = await axios.get<{ favorites: NewsFavorite[] }>('/api/news/favorites');
+```
+
+**用途**：在收藏页面展示用户已收藏的新闻列表。
+
+---
+
+### 15.2 收藏新闻
+
+```
+POST /api/news/favorites
+```
+
+**鉴权**：需登录
+
+```typescript
+interface NewsFavoriteRequest {
+  title: string;           // 必填，1-200 字符
+  summary?: string;         // 选填，最多 500 字符
+  content?: string;         // 选填，最多 5000 字符
+  url?: string;            // 选填，最多 1000 字符
+  source?: string;          // 选填，最多 32 字符
+  tag?: string;            // 选填，最多 32 字符
+}
+
+const res = await axios.post<{ status: string; title: string }>(
+  '/api/news/favorites',
+  {
+    title: '2026年夏季旅游热门目的地TOP10',
+    summary: '根据最新数据，2026年夏季...',
+    url: 'https://example.com/article/123',
+    source: '微博',
+    tag: '热门',
+  }
+);
+
+// 响应
+{ "status": "ok", "title": "2026年夏季旅游热门目的地TOP10" }
+
+// 幂等处理：如果已收藏，返回
+{ "status": "already_favorited", "title": "..." }
+```
+
+**注意**：
+- 收藏成功后会自动写入 `short_term_memories`，让智能体在对话中能引用
+- 支持幂等操作，重复收藏同一标题会返回 `already_favorited`
+
+---
+
+### 15.3 取消收藏
+
+```
+DELETE /api/news/favorites/{favorite_id}
+```
+
+**鉴权**：需登录
+
+```typescript
+const res = await axios.delete(`/api/news/favorites/${favoriteId}`);
+
+// 响应
+{ "detail": "已取消收藏" }
+```
+
+| 状态码 | 说明 |
+|--------|------|
+| 200 | 取消成功 |
+| 401 | 未登录 |
+| 403 | 无权删除（只能删除自己收藏的） |
+| 404 | 收藏记录不存在 |
+
+---
+
 ## 通用错误格式
 
 所有接口在出错时返回统一格式：
@@ -1688,4 +1785,4 @@ async function apiCall<T>(fn: () => Promise<AxiosResponse<T>>): Promise<T> {
 
 ---
 
-> **接口总数**：47 个 | **模块数**：14 | **最后更新**：2026-07-02
+> **接口总数**：50 个 | **模块数**：15 | **最后更新**：2026-07-04
