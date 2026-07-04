@@ -149,6 +149,56 @@ def _run_migrations(conn: Any) -> None:
     conn.commit()
     logger.info("Migration: ensured quality_issues table exists")
 
+    # 新闻收藏表（热搜收藏功能）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS news_favorites (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            summary     TEXT NOT NULL DEFAULT '',
+            content     TEXT NOT NULL DEFAULT '',
+            url         TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL DEFAULT '',
+            tag         TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL,
+            UNIQUE(user_id, title)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_news_fav_user ON news_favorites(user_id)")
+    # 给已有表补充 content 列（兼容旧数据库）
+    try:
+        nf_cols = {row[1] for row in conn.execute("PRAGMA table_info(news_favorites)").fetchall()}
+        if "content" not in nf_cols:
+            conn.execute("ALTER TABLE news_favorites ADD COLUMN content TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+            logger.info("Migration: added content to news_favorites")
+    except Exception:
+        logger.info("Migration: news_favorites content column already exists (skipped)")
+    conn.commit()
+    logger.info("Migration: ensured news_favorites table exists")
+
+    # sessions 表增加 user_id 列（P0-4：替代 tasks 表作为 session↔user 映射）
+    try:
+        s_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "user_id" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+            # 回填：从 tasks 表反查已知的 session↔user 映射
+            rows = conn.execute(
+                "SELECT DISTINCT session_id, user_id FROM tasks WHERE user_id != ''"
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE sessions SET user_id = ? WHERE session_id = ?",
+                    (row["user_id"], row["session_id"]),
+                )
+            conn.commit()
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+            conn.commit()
+            logger.info("Migration: added user_id to sessions, backfilled %d rows", len(rows))
+    except Exception:
+        logger.info("Migration: sessions user_id column already exists (skipped)")
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -161,6 +211,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL DEFAULT '',
     summary    TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
@@ -201,15 +252,6 @@ CREATE TABLE IF NOT EXISTS profiles (
     created_at        TEXT NOT NULL DEFAULT '',
     updated_at        TEXT NOT NULL DEFAULT ''
 );
-
-CREATE TABLE IF NOT EXISTS memories (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope_id   TEXT NOT NULL DEFAULT 'default',
-    text       TEXT NOT NULL,
-    source     TEXT NOT NULL DEFAULT 'conversation',
-    created_at TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope_id);
 
 CREATE TABLE IF NOT EXISTS conversations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

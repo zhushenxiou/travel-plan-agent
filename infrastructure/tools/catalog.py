@@ -4,6 +4,12 @@ from .base import ToolSpec
 
 
 class ToolCatalog:
+    """P2-13：工具规格只读视图（与 ToolRegistry 的 spec 部分重叠）。
+
+    保留供测试和外部查询使用；生产路径请优先使用 ToolRegistry
+    （其同时持有 spec + handler）。
+    """
+
     def __init__(self) -> None:
         self._specs: dict[str, ToolSpec] = {}
 

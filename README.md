@@ -1,4 +1,4 @@
-# Claw — 通用智能体平台
+# 云合 — 通用智能体平台
 
 通用 Agent 调度 + 领域 Agent + Skill + MCP · 智能旅行 · 流式对话 · 地图展示 · 花费统计 · 一键分享
 
@@ -51,7 +51,7 @@ graph TB
     end
 
     subgraph "领域层 (Domain)"
-        AgentCore[Agent 主循环<br/>travel_core]
+        AgentCore[Agent 主循环<br/>domain/travel/core.py]
         Reasoning[ReAct 推理引擎]
         Intent[意图识别]
         Emotion[情感检测]
@@ -409,4 +409,4 @@ pytest tests/ -v
 
 ## 许可证
 
-Private © 2026 Claw Contributors
+Private © 2026 云合 Contributors

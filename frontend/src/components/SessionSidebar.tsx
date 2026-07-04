@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Trash2, MessageSquare, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useAuthStore } from '../hooks/useAuthStore'
 import { useChatStore } from '../hooks/useChatStore'
@@ -8,6 +8,7 @@ import type { SessionInfo } from '../utils/api'
 interface Props {
   onSessionChange: (sessionId: string) => void
   activeSessionId: string
+  refreshTrigger?: number          // 外部递增此值可强制刷新会话列表
 }
 
 /**
@@ -15,12 +16,14 @@ interface Props {
  * 位于对话区右侧。
  * sessions 存在全局 store，Home 卸载重挂载时不会丢失，避免每次返回都白屏重新加载。
  */
-export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
+export function SessionSidebar({ onSessionChange, activeSessionId, refreshTrigger }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [loading, setLoading] = useState(false)
   const { setSessionId, loadMessages, resetSession } = useChatStore()
   const sessions = useChatStore((s) => s.sessions)
   const setSessions = useChatStore((s) => s.setSessions)
+  // 记录上次刷新时的 activeSessionId，避免首次挂载时多余请求
+  const lastRefreshedForIdRef = useRef<string | null>(null)
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -35,6 +38,21 @@ export function SessionSidebar({ onSessionChange, activeSessionId }: Props) {
   useEffect(() => {
     fetchSessions()
   }, [fetchSessions])
+
+  // 监听 activeSessionId 变化（切换会话/新建会话时自动刷新列表）
+  useEffect(() => {
+    if (activeSessionId && activeSessionId !== lastRefreshedForIdRef.current) {
+      lastRefreshedForIdRef.current = activeSessionId
+      fetchSessions()
+    }
+  }, [activeSessionId, fetchSessions])
+
+  // 监听外部刷新信号（Home 发送消息成功后触发）
+  useEffect(() => {
+    if (refreshTrigger && refreshTrigger > 0) {
+      fetchSessions()
+    }
+  }, [refreshTrigger, fetchSessions])
 
   const handleNewSession = async () => {
     setLoading(true)

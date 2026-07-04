@@ -136,7 +136,7 @@ class TestBuildMissingInfoContext:
     def _make_agent(self):
         from domain.travel.core import Agent
         from infrastructure.llm.openai import OpenAILLM
-        from domain.reasoning.prompting import PromptBuilder
+        from domain.travel.prompting import PromptBuilder
         from domain.user.session.manager import SessionManager
         from infrastructure.tools.registry import ToolRegistry
         from infrastructure.tools.executor import ToolExecutor
@@ -251,9 +251,9 @@ class TestBuildMissingInfoContext:
 
 class TestPromptingMissingInfoContext:
     def test_missing_info_context_in_prompt(self):
-        from domain.reasoning.prompting import PromptBuilder
-        from domain.reasoning.prompt_context import PromptContext
-        from domain.reasoning.context_manager import PreparedContext
+        from domain.travel.prompting import PromptBuilder
+        from domain.travel.prompt_context import PromptContext
+        from domain.travel.context_manager import PreparedContext
         from domain.user.session.manager import Session
         from domain.shared.types import IntentResult, IntentType
 

@@ -1,0 +1,5 @@
+{
+    "serverIdentifier": "arxiv",
+    "serverName": "ArXiv 学术搜索",
+    "serverDescription": "ArXiv 论文搜索 + Semantic Scholar 引用分析。支持关键词搜索、分类过滤、时间范围筛选、引用关系查询。无需 API Key。"
+}

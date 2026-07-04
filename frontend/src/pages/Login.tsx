@@ -52,7 +52,7 @@ export function LoginPage() {
             className="text-2xl font-bold text-slate-800"
             style={{ fontFamily: 'var(--font-display)' }}
           >
-            Claw 旅行规划师
+            Claw7
           </h1>
           <p className="text-sm text-slate-500 mt-1">AI 规划 · 实时搜索 · 一键保存行程</p>
         </div>

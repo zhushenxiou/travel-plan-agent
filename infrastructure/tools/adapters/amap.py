@@ -9,8 +9,10 @@ from infrastructure.tools.base import ToolHandler, ToolSpec, bind_tool
 
 logger = logging.getLogger(__name__)
 
+from config import settings
+
 AMAP_KEY = os.environ.get("AMAP_WEBSERVICE_KEY", "")
-_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "skills", "amap-maps", "scripts", "amap_tool.py")
+_SCRIPT = str(settings.skills_dir / "amap-maps" / "scripts" / "amap_tool.py")
 
 
 def _run_amap(args: list[str]) -> dict:

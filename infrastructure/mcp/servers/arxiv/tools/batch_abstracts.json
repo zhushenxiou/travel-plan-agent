@@ -1,0 +1,15 @@
+{
+    "name": "batch_abstracts",
+    "description": "批量获取多篇 ArXiv 论文的摘要信息。适用于对搜索结果中的论文进行快速横向比较。单次最多请求 50 篇。",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "paper_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "ArXiv 论文 ID 列表，如 ['2401.12345', '2305.67890']"
+            }
+        },
+        "required": ["paper_ids"]
+    }
+}

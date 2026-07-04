@@ -4,6 +4,7 @@ import logging
 import traceback as traceback_mod
 from infrastructure.tools.policy import ToolPolicy,PolicyMode
 from infrastructure.tools.registry import ToolRegistry
+from domain.shared.audit.context import AuditContext
 from domain.shared.types import ToolCall
 
 logger = logging.getLogger(__name__)
@@ -13,14 +14,24 @@ class ToolExecutor:
         self._registry = registry
         self._policy = policy
         self._audit_logger = audit_logger
-        self._audit_session_id: str = ""
-        self._audit_user_id: str = ""
-        self._audit_trace_id: str = ""
+
+    @property
+    def policy(self) -> ToolPolicy:
+        """P1-16：暴露公共属性，替代外部对 _policy 的私有访问。"""
+        return self._policy
+
+    @property
+    def registry(self) -> ToolRegistry:
+        """P1-16：暴露公共属性，替代外部对 _registry 的私有访问。"""
+        return self._registry
+
+    def list_tool_names(self) -> list[str]:
+        """P1-16：返回执行器绑定的工具名列表（替代外部对 _handlers 的私有访问）。"""
+        return self._registry.list_names()
 
     def set_audit_context(self, *, session_id: str, user_id: str, trace_id: str = "") -> None:
-        self._audit_session_id = session_id
-        self._audit_user_id = user_id
-        self._audit_trace_id = trace_id
+        # P0-5：用共享 ContextVar 替代实例属性，并发安全
+        AuditContext.set(session_id=session_id, user_id=user_id, trace_id=trace_id)
 
     async def execute(self, calls: list[ToolCall]) -> list[dict]:
         results: list[dict] = []
@@ -100,10 +111,11 @@ class ToolExecutor:
             else:
                 logger.info("Tool OK: name=%s result=%s", call.name, content_preview)
             if self._audit_logger:
+                ctx = AuditContext.get()
                 self._audit_logger.log_tool_call(
-                    session_id=self._audit_session_id,
-                    user_id=self._audit_user_id,
-                    trace_id=self._audit_trace_id,
+                    session_id=ctx.session_id,
+                    user_id=ctx.user_id,
+                    trace_id=ctx.trace_id,
                     tool_name=call.name,
                     arguments=call.arguments,
                     result_summary=str(payload.get("content", "")),

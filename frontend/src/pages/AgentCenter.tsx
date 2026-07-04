@@ -82,29 +82,35 @@ export function AgentCenter() {
       {/* 内置智能体 */}
       <div className="mb-8">
         <h2 className="text-lg font-semibold mb-4 text-slate-700">内置智能体</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {agents.builtin.map(agent => (
             <div key={agent.id} className="border border-slate-200 rounded-lg p-4 bg-white hover:shadow-md transition-shadow">
               <div className="text-4xl mb-2">{agent.icon}</div>
               <h3 className="font-semibold text-slate-800">{agent.name}</h3>
               <p className="text-sm text-slate-500 mb-3 line-clamp-2">{agent.description}</p>
-              <button
-                onClick={() => handleUseAgent(agent.id)}
-                className="w-full bg-sky-500 text-white py-2 rounded-lg hover:bg-sky-600 transition-colors text-sm font-medium"
-              >
-                使用
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleUseAgent(agent.id)}
+                  className="flex-1 bg-sky-500 text-white py-2 rounded-lg hover:bg-sky-600 transition-colors text-sm font-medium"
+                >
+                  使用
+                </button>
+                <button
+                  onClick={() => navigate(`/agents/edit/${agent.id}`)}
+                  className="px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm text-slate-600"
+                >
+                  编辑
+                </button>
+              </div>
             </div>
           ))}
-          <div className="border-2 border-dashed border-slate-300 rounded-lg p-4 flex flex-col items-center justify-center text-slate-400 hover:border-sky-400 hover:text-sky-500 transition-colors">
+          <button
+            onClick={() => navigate('/agents/create')}
+            className="border-2 border-dashed border-slate-300 rounded-lg p-4 flex flex-col items-center justify-center text-slate-400 hover:border-sky-400 hover:text-sky-500 transition-colors"
+          >
             <Plus size={32} className="mb-2" />
-            <button
-              onClick={() => navigate('/agents/create')}
-              className="text-sky-500 font-medium text-sm"
-            >
-              创建自定义智能体
-            </button>
-          </div>
+            <span className="text-sky-500 font-medium text-sm">创建自定义智能体</span>
+          </button>
         </div>
       </div>
 

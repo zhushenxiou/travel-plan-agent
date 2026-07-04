@@ -38,6 +38,7 @@ export function Home() {
   const [activeSessionId, setActiveSessionId] = useState(sessionId)
   const [agentMap, setAgentMap] = useState<Record<string, AgentInfo>>({})
   const activeAgent = useSessionStore((s) => s.activeAgent)
+  const [sessionListRefresh, setSessionListRefresh] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const thinkingClearedRef = useRef(false)
 
@@ -197,6 +198,31 @@ export function Home() {
             // 智能体操作建议 — 更新操作卡片
             setAgentActions(event.data)
             break
+          case 'need_input':
+            // DynamicAgent 追问：把问题作为一条 assistant 消息追加显示。
+            // 后端 data 形态可能为：
+            //   - string（已构造好的问题文案）
+            //   - string[]（缺失字段列表，如 ["destination", "date"]）
+            //   - { question: string; field?: string }（文档示例形态）
+            finishLastMessage()
+            clearThinkingSteps()
+            {
+              const d = event.data
+              let question = '请补充更多信息'
+              if (typeof d === 'string') {
+                question = d
+              } else if (Array.isArray(d) && d.length > 0) {
+                question = `请补充以下信息：${d.join('、')}`
+              } else if (d && typeof d === 'object' && typeof d.question === 'string') {
+                question = d.question
+              }
+              addMessage({
+                role: 'assistant',
+                content: `📋 ${question}`,
+                isStreaming: false,
+              })
+            }
+            break
         }
       }
     } catch (err) {
@@ -221,36 +247,42 @@ export function Home() {
     } finally {
       setLoading(false)
       abortRef.current = null
+      // 消息发送完成后刷新右侧会话列表，确保新会话/消息数更新
+      setSessionListRefresh((n) => n + 1)
     }
   }
 
   const currentAgent = activeAgent ? agentMap[activeAgent] : undefined
+  const hasMessages = messages.length > 0
 
   return (
     <div className="h-screen flex bg-slate-50">
       <NavSidebar />
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-shrink-0">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center shadow-sm">
-            {currentAgent?.icon ? (
-              <span className="text-lg leading-none">{currentAgent.icon}</span>
-            ) : (
-              <Sparkles size={18} className="text-white" />
-            )}
-          </div>
-          <div>
-            <h1
-              className="text-base font-semibold text-slate-800 leading-tight"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              {currentAgent?.name ?? 'Claw 智能助手'}
-            </h1>
-            <p className="text-xs text-slate-400">
-              {currentAgent?.description ?? '通用智能体 · 多技能协作 · 自由对话'}
-            </p>
-          </div>
-        </header>
+        {/* 空对话时隐藏 header，让欢迎页更简洁（豆包风格） */}
+        {hasMessages && (
+          <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-shrink-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center shadow-sm">
+              {currentAgent?.icon ? (
+                <span className="text-lg leading-none">{currentAgent.icon}</span>
+              ) : (
+                <Sparkles size={18} className="text-white" />
+              )}
+            </div>
+            <div>
+              <h1
+                className="text-base font-semibold text-slate-800 leading-tight"
+                style={{ fontFamily: 'var(--font-display)' }}
+              >
+                {currentAgent?.name ?? '云合 智能助手'}
+              </h1>
+              <p className="text-xs text-slate-400">
+                {currentAgent?.description ?? '通用智能体 · 多技能协作 · 自由对话'}
+              </p>
+            </div>
+          </header>
+        )}
 
         <ChatWindow
           messages={messages}
@@ -258,6 +290,7 @@ export function Home() {
           isEscalated={isEscalated}
           thinkingSteps={thinkingSteps}
           onQuickSend={handleSend}
+          currentAgentInfo={currentAgent}
         />
 
         <ChatInput
@@ -266,12 +299,16 @@ export function Home() {
           isEscalated={isEscalated}
           onClear={handleNewChat}
           onStop={handleStop}
+          agents={Object.values(agentMap)}
+          activeAgentId={activeAgent ?? null}
+          onAgentChange={(id) => setActiveAgent(id)}
         />
       </div>
 
       <SessionSidebar
         onSessionChange={handleSessionChange}
         activeSessionId={activeSessionId}
+        refreshTrigger={sessionListRefresh}
       />
     </div>
   )

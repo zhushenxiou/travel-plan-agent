@@ -198,15 +198,21 @@ class MemoryDistiller:
         return candidates
 
     def _compress_content(self, content: str, category: str) -> str:
+        """P1-3 修复：原实现用 loop.is_running() 短路，导致在 FastAPI 异步上下文中
+        永远走 fallback content[:30]，LLM 压缩根本不会执行。
+
+        新方案：用 asyncio.run() 在独立事件循环中调用 LLM。
+        前提：调用方（_post_chat_memory_processing / scheduler）需通过 asyncio.to_thread()
+        在独立线程中调用 run_distillation，从而避免 "asyncio.run() cannot be called
+        from a running event loop" 错误。
+        """
         if not self._llm:
             return content[:30]
 
         try:
             import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                return content[:30]
-            result = loop.run_until_complete(
+            # asyncio.run() 创建独立事件循环；调用方必须在独立线程中调用 run_distillation
+            result = asyncio.run(
                 self._llm.complete_json(
                     system=_DISTILL_SYSTEM_PROMPT,
                     user=json.dumps([{"category": category, "content": content}], ensure_ascii=False),
@@ -216,6 +222,9 @@ class MemoryDistiller:
                 item = result[0]
                 if isinstance(item, dict) and item.get("content"):
                     return str(item["content"])[:30]
+        except RuntimeError:
+            # 在已有事件循环的线程中被调用 — 回退到截断（保持向后兼容）
+            logger.debug("Memory compression skipped: running within event loop")
         except Exception:
             logger.warning("Memory compression failed", exc_info=True)
 

@@ -11,6 +11,7 @@ from infrastructure.llm.openai import OpenAILLM
 from domain.agent.schema import AgentConfig
 from domain.agent.factory import AgentFactory
 from domain.agent.repository import CustomAgentRepository
+from domain.safety.prompt_guard import PromptGuard
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,8 @@ class OrchestratorAgent(BaseAgent):
         self._yunhe_mode = (default_agent == "yunhe" and self._yunhe_config is not None)
 
         # Agent 实例缓存
-        self._agent_cache: dict[str, BaseAgent] = {}
+        # P2-7：缓存 key 改为 (agent_id, user_id or "")，避免跨用户复用 agent 实例
+        self._agent_cache: dict[tuple[str, str], BaseAgent] = {}
         self._MAX_CACHE_SIZE = 100
 
         # 智能体描述缓存
@@ -149,7 +151,7 @@ class OrchestratorAgent(BaseAgent):
         """委托未定义的公共方法到 travel agent（会话/调试/记忆等），保持向后兼容。
 
         即使 default_agent="yunhe"，list_user_sessions/list_mcp_servers 等
-        工具方法仍委托给 travel agent 的底层实现（travel_core.Agent）。
+        工具方法仍委托给 travel agent 的底层实现（domain/travel/core.py:Agent）。
         """
         if name.startswith('_'):
             raise AttributeError(name)
@@ -209,8 +211,10 @@ class OrchestratorAgent(BaseAgent):
         return False
 
     def _get_or_create_agent(self, agent_id: str, user_id: str | None) -> BaseAgent:
-        if agent_id in self._agent_cache:
-            return self._agent_cache[agent_id]
+        # P2-7：缓存 key 含 user_id，避免跨用户复用 agent 实例
+        cache_key = (agent_id, user_id or "")
+        if cache_key in self._agent_cache:
+            return self._agent_cache[cache_key]
         if agent_id in self._builtin_configs:
             config = self._builtin_configs[agent_id]
         else:
@@ -221,11 +225,12 @@ class OrchestratorAgent(BaseAgent):
         agent = self._factory.create(config)
 
         if len(self._agent_cache) >= self._MAX_CACHE_SIZE:
+            # 清理：保留 builtin agent（其 key 的 agent_id 在 _builtin_configs）
             self._agent_cache = {
                 k: v for k, v in self._agent_cache.items()
-                if k in self._builtin_configs
+                if k[0] in self._builtin_configs
             }
-        self._agent_cache[agent_id] = agent
+        self._agent_cache[cache_key] = agent
         return agent
 
     # ===== 云合模式：prompt 构建 =====
@@ -274,6 +279,12 @@ class OrchestratorAgent(BaseAgent):
 
         仅在 self._yunhe_mode 时使用此流程。
         """
+        # ===== 输入消毒：Prompt 注入防御 =====
+        cleaned, warnings = PromptGuard.sanitize(message)
+        if warnings:
+            logger.warning("Prompt injection detected: %s", warnings)
+        message = cleaned
+
         # ===== Tier 0：规则快路径 =====
         if self._is_fast_chat(message):
             logger.info("Yunhe Tier 0: fast chat for '%s'", message[:30])
@@ -288,8 +299,19 @@ class OrchestratorAgent(BaseAgent):
         system_prompt = self._build_yunhe_prompt(user_id)
         working_messages: list[dict] = [{"role": "user", "content": message}]
         delegation_count = 0
+        # P2-8：独立迭代上限，防止 LLM 反复调用非委派 tool（如 list_available_agents）导致死循环
+        yunhe_iteration = 0
+        _MAX_YUNHE_ITERATIONS = 10
 
         while delegation_count < self._MAX_DELEGATIONS:
+            yunhe_iteration += 1
+            if yunhe_iteration > _MAX_YUNHE_ITERATIONS:
+                logger.warning(
+                    "Yunhe loop hit max_yunhe_iterations=%d, breaking",
+                    _MAX_YUNHE_ITERATIONS,
+                )
+                yield {"type": "chunk", "data": "\n\n（已达到推理上限）"}
+                break
             try:
                 llm_resp = await self._llm.complete_with_tools(
                     system=system_prompt,

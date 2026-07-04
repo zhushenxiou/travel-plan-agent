@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Bot, Brain, LogOut, Sparkles, Wrench, Plug } from 'lucide-react'
+import { Bot, Brain, LogOut, Sparkles, Wrench, Plug, Star } from 'lucide-react'
 import { useAuthStore } from '../hooks/useAuthStore'
 
 /**
@@ -28,7 +28,7 @@ export function NavSidebar() {
           className="text-sm font-semibold text-slate-800"
           style={{ fontFamily: 'var(--font-display)' }}
         >
-          Claw
+          云合
         </span>
       </div>
 
@@ -77,6 +77,13 @@ export function NavSidebar() {
         >
           <Brain size={18} className="flex-shrink-0" />
           记忆
+        </button>
+        <button
+          onClick={() => navigate('/favorites')}
+          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-slate-600 hover:bg-slate-50`}
+        >
+          <Star size={18} className="flex-shrink-0" />
+          我的收藏
         </button>
       </nav>
 

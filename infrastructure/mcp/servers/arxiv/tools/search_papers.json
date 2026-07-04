@@ -1,0 +1,36 @@
+{
+    "name": "search_papers",
+    "description": "搜索 ArXiv 论文。支持关键词搜索、分类过滤（如 cs.AI、cs.CL）、时间范围筛选、按相关度/日期排序。每次搜索建议获取 15-20 条结果以获得全面视角。arXiv API 限制每 3 秒一次请求。",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "搜索关键词。可用 AND、OR、ANDNOT 组合，用引号包裹精确短语，如 'transformer attention' AND 'survey'"
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "返回结果数量，默认 10，最大 50"
+            },
+            "date_from": {
+                "type": "string",
+                "description": "起始日期，YYYY-MM-DD 格式。如 '2023-01-01' 表示只看 2023 年后的论文"
+            },
+            "date_to": {
+                "type": "string",
+                "description": "结束日期，YYYY-MM-DD 格式。与 date_from 配合可限定时间窗口"
+            },
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "ArXiv 分类限定，如 ['cs.AI', 'cs.LG']。常用：cs.AI(人工智能)、cs.LG(机器学习)、cs.CL(自然语言)、cs.CV(计算机视觉)、cs.MA(多智能体)、stat.ML(统计机器学习)"
+            },
+            "sort_by": {
+                "type": "string",
+                "enum": ["relevance", "date"],
+                "description": "排序方式。relevance(相关度)适合精准搜索，date(最新优先)适合了解近期进展"
+            }
+        },
+        "required": ["query"]
+    }
+}

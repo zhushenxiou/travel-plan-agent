@@ -156,7 +156,7 @@ class TravelIntentClassifier:
 
     _FAST_CHAT = {"你好", "hello", "hi", "谢谢", "thanks", "收到", "嗯", "哦", "哈", "嘿"}
 
-    async def classify(self, message: str) -> TravelIntentResult:
+    async def classify(self, message: str, conversation_history: list[dict[str, str]] | None = None) -> TravelIntentResult:
         stripped = message.strip().lower()
         if stripped in self._FAST_CHAT or len(stripped) <= 1:
             return TravelIntentResult(
@@ -169,8 +169,9 @@ class TravelIntentClassifier:
                 detected_destination="",
             )
 
-        keyword_result = self._keyword_classify(message)
-        if keyword_result and keyword_result.confidence >= 0.7:
+        keyword_result = self._keyword_classify(message, conversation_history)
+        # P2-10：阈值 0.7 → 0.85，降低关键词误判为旅行意图的概率。
+        if keyword_result and keyword_result.confidence >= 0.85:
             return keyword_result
 
         if self._llm is None:
@@ -204,7 +205,7 @@ class TravelIntentClassifier:
             confidence=float(data.get("confidence", 0.5)),
             tool_hints=INTENT_TOOL_HINTS.get(intent, []),
             rag_keywords=data.get("rag_keywords", INTENT_RAG_KEYWORDS.get(intent, [])),
-            missing_info=self._check_missing_info(message, intent),
+            missing_info=self._check_missing_info(message, intent, conversation_history),
             detected_destination=self._extract_destination(message),
             raw_output=text,
         )
@@ -213,7 +214,7 @@ class TravelIntentClassifier:
     _CONFIRM_EXACT = {"行", "可以", "好的", "是的", "没错"}
     _NEGATION_WORDS = {"不太满意", "不满意", "不好", "不行", "不可以", "不太行", "不够好"}
 
-    def _keyword_classify(self, message: str) -> TravelIntentResult | None:
+    def _keyword_classify(self, message: str, conversation_history: list[dict[str, str]] | None = None) -> TravelIntentResult | None:
         lowered = message.lower()
         stripped = message.strip()
 
@@ -266,12 +267,12 @@ class TravelIntentClassifier:
             confidence=confidence,
             tool_hints=INTENT_TOOL_HINTS.get(best_intent, []),
             rag_keywords=INTENT_RAG_KEYWORDS.get(best_intent, []),
-            missing_info=self._check_missing_info(message, best_intent),
+            missing_info=self._check_missing_info(message, best_intent, conversation_history),
             detected_destination=self._extract_destination(message),
         )
 
-    def _check_missing_info(self, message: str, intent: TravelIntentType) -> list[str]:
-        return self._regex_missing_info(message, intent, conversation_history=None)
+    def _check_missing_info(self, message: str, intent: TravelIntentType, conversation_history: list[dict[str, str]] | None = None) -> list[str]:
+        return self._regex_missing_info(message, intent, conversation_history=conversation_history)
 
     async def check_missing_info_with_context(
         self,
@@ -328,6 +329,9 @@ class TravelIntentClassifier:
             for turn in conversation_history[-6:]
         )
 
+        # 正则检查作为回退基准，LLM 失败时返回正则结果
+        regex_fallback = self._regex_missing_info(message, intent, conversation_history=conversation_history)
+
         try:
             text = await self._llm.complete(
                 system=system,
@@ -339,8 +343,8 @@ class TravelIntentClassifier:
             logger.info("LLM missing_info check: fields=%s missing=%s reasoning=%s", fields, result, data.get("reasoning", ""))
             return result
         except Exception as e:
-            logger.warning("LLM missing_info check failed, skipping: %s", e)
-            return []
+            logger.warning("LLM missing_info check failed, falling back to regex: %s", e)
+            return regex_fallback
 
     _DESTINATION_PATTERNS = [
         r"(?:去|到|飞|前往)\s*([^\s,，。！？、]+?)(?:旅游|玩|出差|度假|吧|呢|啊|。|，|$)",
@@ -374,7 +378,8 @@ class TravelIntentClassifier:
     def _regex_missing_info(self, message: str, intent: TravelIntentType, conversation_history: list[dict[str, str]] | None = None) -> list[str]:
         combined = message
         if conversation_history:
-            combined = " ".join(turn.get("content", "") for turn in conversation_history)
+            # 拼接历史消息和当前消息，确保当前消息的内容也被检查
+            combined = " ".join(turn.get("content", "") for turn in conversation_history) + " " + message
         compacted = re.sub(r"(\d)\s+(天|日|号|月|晚|人)", r"\1\2", combined)
         missing: list[str] = []
         if intent == TravelIntentType.TRIP_PLANNING:

@@ -10,7 +10,9 @@ from infrastructure.tools.base import ToolHandler, ToolSpec, bind_tool
 
 logger = logging.getLogger(__name__)
 
-_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "skills", "fliggy-travel", "scripts", "flyai_quick.py")
+from config import settings
+
+_SCRIPT = str(settings.skills_dir / "fliggy-travel" / "scripts" / "flyai_quick.py")
 
 
 def _find_flyai() -> str | None:

@@ -36,9 +36,9 @@ domain/
 │   ├── repository.py     # 智能体存储
 │   ├── schema.py         # 配置模型
 │   ├── base.py           # 基类
-│   └── travel_core.py    # Agent主循环
 │
 ├── travel/          # 旅行业务(intent+itinerary+album聚合)
+│   └── core.py           # Agent主循环（travel_core.py 已删除，见 P1-1）
 │   ├── intent/          # 旅行意图识别
 │   ├── itinerary/       # 行程管理
 │   ├── album/           # 相册管理

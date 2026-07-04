@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 
 from config import settings
 from infrastructure.llm.openai import OpenAILLM
+from infrastructure.llm.fallback import FallbackLLM
 from domain.shared.runtime.logging import init_from_settings
-from domain.reasoning.prompting import PromptBuilder
+from domain.travel.prompting import PromptBuilder
 from infrastructure.tools.adapters.interaction import get_interaction_handlers, get_interaction_specs
 from domain.user.session.manager import SessionManager
 from infrastructure.tools.executor import ToolExecutor
@@ -87,27 +88,6 @@ def _build_tool_infrastructure(
     return tool_registry, tool_executor
 
 
-def build_agent() -> Agent:
-    """保留原有 build_agent()，向后兼容（仅构建旅游 Agent 主循环）。"""
-    audit_logger = AuditLogger()
-    llm = OpenAILLM(audit_logger=audit_logger)
-
-    mcp_catalog = MCPCatalog(settings.mcp_servers_dir)
-    mcp_runtime = MCPProxyRuntime(catalog=mcp_catalog)
-    tool_registry, tool_executor = _build_tool_infrastructure(mcp_catalog, mcp_runtime, audit_logger)
-
-    return _build_travel_agent_core(
-        llm=llm,
-        audit_logger=audit_logger,
-        tool_registry=tool_registry,
-        tool_executor=tool_executor,
-        session_store=SessionManager(),
-        mcp_catalog=mcp_catalog,
-        mcp_runtime=mcp_runtime,
-        skip_init=True,
-    )
-
-
 def _build_travel_agent_core(
     llm: OpenAILLM,
     audit_logger: AuditLogger,
@@ -153,7 +133,21 @@ def build_orchestrator() -> AppContainer:
 
     # ===== 基础依赖 =====
     audit_logger = AuditLogger()
-    llm = OpenAILLM(audit_logger=audit_logger)
+    # P1-15：构建 LLM 降级链。主 provider 始终创建；若配置了 fallback_api_key，
+    # 再追加备用 provider，用 FallbackLLM 包装。无 fallback 配置时退化为单实例。
+    primary_llm = OpenAILLM(audit_logger=audit_logger)
+    fallback_providers = []
+    if settings.fallback_api_key:
+        fallback_providers.append(OpenAILLM(
+            audit_logger=audit_logger,
+            api_key=settings.fallback_api_key,
+            base_url=settings.fallback_base_url,
+            model=settings.fallback_model or None,
+        ))
+    if fallback_providers:
+        llm = FallbackLLM(providers=[primary_llm] + fallback_providers)
+    else:
+        llm = primary_llm
 
     # ===== Skill 提供者（抽象接口，可替换实现） =====
     skill_provider = FileSkillProvider(skills_dir=settings.skills_dir)

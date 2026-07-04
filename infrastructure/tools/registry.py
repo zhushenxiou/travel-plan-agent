@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from infrastructure.tools.base import Tool
+from collections.abc import Iterator
+from infrastructure.tools.base import Tool, ToolSpec
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -35,5 +36,15 @@ class ToolRegistry:
             name for name, tool in self._tools.items() if tool.category not in excluded
         ]
         return sorted(allowed or fallback)
+
+    # ===== P1-16：公共 API 替代外部对 _tools 的私有访问 =====
+
+    def get_all_specs(self) -> list[ToolSpec]:
+        """返回所有工具的 spec 列表（只读视图）。"""
+        return [tool.spec for tool in self._tools.values()]
+
+    def iter_tools(self) -> Iterator[Tool]:
+        """迭代所有工具。"""
+        return iter(self._tools.values())
 
 

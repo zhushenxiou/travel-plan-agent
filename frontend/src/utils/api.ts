@@ -60,8 +60,13 @@ export async function sendMessage(req: ChatRequest, signal?: AbortSignal): Promi
   return res.json()
 }
 
+export interface NeedInputData {
+  question: string
+  field?: string
+}
+
 export interface StreamEvent {
-  type: 'status' | 'chunk' | 'done' | 'error' | 'tool_status' | 'route' | 'actions'
+  type: 'status' | 'chunk' | 'done' | 'error' | 'tool_status' | 'route' | 'actions' | 'need_input'
   data: any
 }
 
@@ -196,9 +201,11 @@ export interface TrendingItem {
   tag: string
   summary: string
   content?: string
+  url?: string
   img?: string
   hotScore?: string
   hotChange?: string
+  source?: string
 }
 
 export async function getTrending(refresh: boolean = false): Promise<TrendingItem[]> {
@@ -211,6 +218,49 @@ export async function getTrending(refresh: boolean = false): Promise<TrendingIte
   } catch {
     return []
   }
+}
+
+export interface NewsFavorite {
+  id: number
+  title: string
+  summary: string
+  content: string
+  url: string
+  source: string
+  tag: string
+  created_at: string
+}
+
+export async function listNewsFavorites(): Promise<NewsFavorite[]> {
+  const res = await fetch(`${API_BASE}/news/favorites`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取收藏失败')
+  const data = await res.json()
+  return data.favorites || []
+}
+
+export async function addNewsFavorite(item: {
+  title: string
+  summary?: string
+  content?: string
+  url?: string
+  source?: string
+  tag?: string
+}): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/news/favorites`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(item),
+  })
+  if (!res.ok) throw new Error('收藏失败')
+  return res.json()
+}
+
+export async function deleteNewsFavorite(favoriteId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/news/favorites/${favoriteId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('取消收藏失败')
 }
 
 export async function getSessionMessages(sessionId: string): Promise<any[]> {
@@ -490,26 +540,6 @@ export async function createShareLink(itineraryId: string): Promise<{ token: str
   return res.json()
 }
 
-export async function listShareLinks(itineraryId: string): Promise<{ shares: { token: string; itinerary_id: string; view_count: number; created_at: string }[] }> {
-  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/shares`, {
-    headers: authHeaders(),
-  })
-  if (!res.ok) {
-    throw new Error('获取分享列表失败')
-  }
-  return res.json()
-}
-
-export async function deleteShareLink(itineraryId: string, token: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/shares/${token}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  })
-  if (!res.ok) {
-    throw new Error('删除分享链接失败')
-  }
-}
-
 export async function getSharedItinerary(token: string): Promise<{ itinerary: ItineraryData; share_info: { view_count: number; created_at: string } }> {
   const res = await fetch(`${API_BASE}/shared/${token}`)
   if (!res.ok) {
@@ -703,7 +733,7 @@ async function nominatimGeocode(address: string, city?: string): Promise<Geocode
     }
     const qs = new URLSearchParams(params).toString()
     const res = await fetch(`https://nominatim.openstreetmap.org/search?${qs}`, {
-      headers: { 'User-Agent': 'ClawTravelApp/1.0' },
+      headers: { 'User-Agent': 'YunheTravelApp/1.0' },
     })
     if (!res.ok) return null
     const data = await res.json()

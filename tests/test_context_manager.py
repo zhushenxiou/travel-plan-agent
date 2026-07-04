@@ -1,7 +1,7 @@
-"""Tests for domain/reasoning/context_manager.py — ContextManager, PreparedContext"""
+"""Tests for domain/travel/context_manager.py — ContextManager, PreparedContext"""
 import pytest
 
-from domain.reasoning.context_manager import ContextManager, PreparedContext
+from domain.travel.context_manager import ContextManager, PreparedContext
 from domain.user.session.manager import Session, Turn
 
 

@@ -12,14 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class MemoryRecord:
-    text: str
-    source: str
-    scope_id: str = "default"
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-
-
-@dataclass
 class ShortTermMemory:
     id: int
     user_id: str
@@ -46,131 +38,7 @@ class LongTermMemory:
     updated_at: str = ""
 
 
-class MemoryManager:
-    def __init__(self) -> None:
-        self._cache: dict[str, list[MemoryRecord]] = {}
-
-    @staticmethod
-    def _normalize_scope_id(scope_id: str | None) -> str:
-        clean = str(scope_id or "").strip()
-        return clean or "default"
-
-    def remember(
-        self,
-        text: str,
-        *,
-        source: str = "conversation",
-        scope_id: str | None = None,
-    ) -> None:
-        clean = text.strip()
-        if not clean:
-            return
-        norm_scope = self._normalize_scope_id(scope_id)
-        conn = get_connection()
-        existing = conn.execute(
-            "SELECT id FROM memories WHERE scope_id = ? AND text = ? LIMIT 1",
-            (norm_scope, clean),
-        ).fetchone()
-        if existing:
-            logger.debug("Memory skip duplicate: %s", clean[:80])
-            return
-        now = datetime.utcnow().isoformat()
-        conn.execute(
-            "INSERT INTO memories (scope_id, text, source, created_at) VALUES (?, ?, ?, ?)",
-            (norm_scope, clean, source, now),
-        )
-        conn.commit()
-        bucket = self._cache.setdefault(norm_scope, [])
-        bucket.append(MemoryRecord(text=clean, source=source, scope_id=norm_scope, created_at=now))
-        logger.info("Memory stored: source=%s scope_id=%s", source, norm_scope)
-
-    def search(
-        self,
-        query: str,
-        limit: int | None = None,
-        *,
-        scope_id: str | None = None,
-    ) -> list[MemoryRecord]:
-        norm_scope = self._normalize_scope_id(scope_id)
-        max_items = limit or settings.max_memory_items
-        clean = query.strip().lower()
-        if not clean:
-            return self._get_recent(norm_scope, max_items)
-        terms = [token for token in clean.replace("\n", " ").split() if token]
-        if not terms:
-            return self._get_recent(norm_scope, max_items)
-        conn = get_connection()
-        rows = conn.execute(
-            "SELECT text, source, scope_id, created_at FROM memories WHERE scope_id = ?",
-            (norm_scope,),
-        ).fetchall()
-        scored: list[tuple[int, MemoryRecord]] = []
-        for row in rows:
-            hay = row["text"].lower()
-            score = sum(1 for term in terms if term in hay)
-            if score > 0:
-                scored.append((score, MemoryRecord(
-                    text=row["text"],
-                    source=row["source"],
-                    scope_id=row["scope_id"],
-                    created_at=row["created_at"],
-                )))
-        scored.sort(key=lambda r: (r[0], r[1].created_at), reverse=True)
-        return [item for _, item in scored[:max_items]]
-
-    def build_context(self, query: str, *, scope_id: str | None = None) -> str:
-        items = self.search(query, scope_id=scope_id)
-        if not items:
-            return ""
-        logger.debug("Memory context built: matches=%s", len(items))
-        return "\n".join(f"- {item.text}" for item in items)
-
-    def list_recent(
-        self,
-        limit: int | None = None,
-        *,
-        scope_id: str | None = None,
-    ) -> list[MemoryRecord]:
-        max_items = limit or settings.max_memory_items
-        norm_scope = self._normalize_scope_id(scope_id)
-        return self._get_recent(norm_scope, max_items)
-
-    def maybe_learn_from_message(self, message: str, *, scope_id: str | None = None) -> None:
-        clean = message.strip()
-        if not clean:
-            return
-        lowered = clean.lower()
-        triggers = (
-            "i like ", "i prefer ", "my name is ", "remember that ",
-            "我叫", "我喜欢", "请记住", "记住",
-        )
-        if any(trigger in lowered for trigger in triggers) or any(
-            marker in clean for marker in ("我叫", "我喜欢", "请记住", "记住")
-        ):
-            logger.debug("Memory learning trigger matched")
-            self.remember(clean, source="user", scope_id=scope_id)
-
-    def _get_recent(self, scope_id: str, limit: int) -> list[MemoryRecord]:
-        conn = get_connection()
-        rows = conn.execute(
-            "SELECT text, source, scope_id, created_at FROM memories WHERE scope_id = ? ORDER BY id DESC LIMIT ?",
-            (scope_id, limit),
-        ).fetchall()
-        results = []
-        for row in reversed(rows):
-            results.append(MemoryRecord(
-                text=row["text"],
-                source=row["source"],
-                scope_id=row["scope_id"],
-                created_at=row["created_at"],
-            ))
-        return results
-
-
 class DualLayerMemoryManager:
-    def __init__(self) -> None:
-        self._legacy = MemoryManager()
-
     def get_long_term_memories(self, user_id: str) -> list[LongTermMemory]:
         conn = get_connection()
         rows = conn.execute(
@@ -342,21 +210,6 @@ class DualLayerMemoryManager:
         )
         conn.commit()
         return cursor.lastrowid
-
-    def remember(self, text: str, *, source: str = "conversation", scope_id: str | None = None) -> None:
-        self._legacy.remember(text, source=source, scope_id=scope_id)
-
-    def search(self, query: str, limit: int | None = None, *, scope_id: str | None = None) -> list[MemoryRecord]:
-        return self._legacy.search(query, limit=limit, scope_id=scope_id)
-
-    def build_context(self, query: str, *, scope_id: str | None = None) -> str:
-        return self._legacy.build_context(query, scope_id=scope_id)
-
-    def list_recent(self, limit: int | None = None, *, scope_id: str | None = None) -> list[MemoryRecord]:
-        return self._legacy.list_recent(limit=limit, scope_id=scope_id)
-
-    def maybe_learn_from_message(self, message: str, *, scope_id: str | None = None) -> None:
-        self._legacy.maybe_learn_from_message(message, scope_id=scope_id)
 
 
 class SessionMemory:

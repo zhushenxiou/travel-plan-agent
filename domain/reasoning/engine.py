@@ -11,7 +11,10 @@ import re
 from infrastructure.tools.executor import ToolExecutor
 from infrastructure.tools.registry import ToolRegistry
 from infrastructure.llm.openai import OpenAILLM, LLMResponse, ToolCallResult as LLMToolCall
+from domain.shared.audit.context import AuditContext
 from domain.shared.types import Decision, DecisionType, ToolCall
+from domain.reasoning.cost_guard import CostGuard
+from domain.reasoning.tool_selector import ToolSelector
 
 logger = logging.getLogger(__name__)
 
@@ -140,14 +143,54 @@ class ReasoningEngine:
         self._audit_logger = audit_logger
         self.last_trace: list[TraceStep] = []
         self._tools_schema: list[dict[str, Any]] | None = None
-        self._audit_session_id: str = ""
-        self._audit_user_id: str = ""
-        self._audit_trace_id: str = ""
+        # ===== P1-2：CostGuard 与 ToolSelector 接入 =====
+        self._cost_guard = CostGuard(
+            max_iterations=settings.max_iterations,
+            max_tool_calls=20,
+            token_budget=50000,
+        )
+        self._tool_selector = ToolSelector()
+        # 已披露工具集：跨多次 run() 累积，实现渐进式披露
+        self._disclosed_tools: set[str] = set()
 
     def set_audit_context(self, *, session_id: str, user_id: str, trace_id: str = "") -> None:
-        self._audit_session_id = session_id
-        self._audit_user_id = user_id
-        self._audit_trace_id = trace_id
+        # P0-5：用共享 ContextVar 替代实例属性，并发安全
+        AuditContext.set(session_id=session_id, user_id=user_id, trace_id=trace_id)
+
+    def _auto_disclose(self, user_message: str) -> None:
+        """P1-2：根据用户消息自动披露相关工具（渐进式披露的自动推荐）。
+
+        每次调用会向 _disclosed_tools 累加新推荐的工具名。
+        若用户消息命中任何工具的关键词，下次构建 schema 时仅包含已披露子集；
+        若无任何命中（闲聊/简单问答），_disclosed_tools 保持原状，schema 构建时由调用方决定 fallback。
+        """
+        if not user_message.strip():
+            return
+        all_specs = self._tool_registry.get_all_specs()
+        # 已披露的不再重复推荐
+        recommendations = self._tool_selector.select(
+            message=user_message,
+            all_specs=all_specs,
+            already_disclosed=self._disclosed_tools,
+            limit=5,
+        )
+        for spec in recommendations:
+            self._disclosed_tools.add(spec.name)
+        if recommendations:
+            logger.info(
+                "ToolSelector disclosed %d tools: %s",
+                len(recommendations), [s.name for s in recommendations],
+            )
+
+    def _build_active_tools_schema(self) -> list[dict[str, Any]]:
+        """P1-2：构建当前激活的工具 schema。
+
+        - 若 _disclosed_tools 非空：仅包含已披露子集（渐进式披露）
+        - 若 _disclosed_tools 为空（用户消息未命中任何工具关键词）：fallback 到全量 schema
+        """
+        if self._disclosed_tools:
+            return self._build_tools_schema(disclosed_tools=self._disclosed_tools)
+        return self._build_tools_schema()
 
     async def _execute_tool_safely(
         self, tool_name: str, arguments: dict, tool_call_id: str = ""
@@ -181,10 +224,11 @@ class ReasoningEngine:
     def _record_trace(self, trace: TraceStep) -> None:
         self.last_trace.append(trace)
         if self._audit_logger:
+            ctx = AuditContext.get()
             self._audit_logger.log_reasoning_step(
-                session_id=self._audit_session_id,
-                user_id=self._audit_user_id,
-                trace_id=self._audit_trace_id,
+                session_id=ctx.session_id,
+                user_id=ctx.user_id,
+                trace_id=ctx.trace_id,
                 iteration=trace.iteration,
                 decision_type=trace.decision_type,
                 text=trace.text,
@@ -205,8 +249,8 @@ class ReasoningEngine:
         if disclosed_tools is not None:
             schema: list[dict[str, Any]] = []
             for name in disclosed_tools:
-                if name in self._tool_registry._tools:
-                    tool = self._tool_registry._tools[name]
+                if self._tool_registry.has(name):
+                    tool = self._tool_registry.get(name)
                     func_def = self._build_func_def(tool.spec)
                     schema.append(func_def)
             return schema
@@ -215,8 +259,7 @@ class ReasoningEngine:
         if self._tools_schema is not None:
             return self._tools_schema
         schema = []
-        for name in self._tool_registry._tools:
-            tool = self._tool_registry._tools[name]
+        for tool in self._tool_registry.iter_tools():
             func_def = self._build_func_def(tool.spec)
             schema.append(func_def)
         self._tools_schema = schema
@@ -263,7 +306,7 @@ class ReasoningEngine:
             return None
         # 验证是否是合法的 tool call 结构
         valid_calls: list[ToolCall] = []
-        known_tools = set(self._tool_executor._handlers.keys()) if self._tool_executor else set()
+        known_tools = set(self._tool_executor.list_tool_names()) if self._tool_executor else set()
         for item in raw_calls:
             if not isinstance(item, dict):
                 return None
@@ -327,9 +370,21 @@ class ReasoningEngine:
         tools_executed = False
         seen_signatures: dict[str, int] = {}
         use_native = getattr(settings, "use_native_tool_calling", True)
-        tools_schema = self._build_tools_schema() if use_native else None
+        # ===== P1-2：CostGuard 重置 + ToolSelector 自动披露 =====
+        self._cost_guard.iterations = 0
+        self._cost_guard.tokens_used = 0
+        self._cost_guard.tool_calls_used = 0
+        self._auto_disclose(user_message)
+        tools_schema = self._build_active_tools_schema() if use_native else None
 
         for iteration in range(1, settings.max_iterations + 1):
+            # ===== P1-2：CostGuard 预算检查 =====
+            if not self._cost_guard.can_continue():
+                logger.warning(
+                    "CostGuard stopped reasoning: %s", self._cost_guard.exceeded_detail()
+                )
+                break
+
             logger.info("===== Reasoning iteration %s/%s =====", iteration, settings.max_iterations)
 
             near_limit = iteration >= settings.max_iterations - 2
@@ -478,6 +533,10 @@ class ReasoningEngine:
                     result_preview,
                 )
             tools_executed = True
+            # ===== P1-2：CostGuard 消耗记账 =====
+            # sync iterations with loop counter; count each tool call
+            self._cost_guard.iterations = iteration
+            self._cost_guard.tool_calls_used += len(decision.tool_calls)
             trace.tool_results = tool_results
             self._record_trace(trace)
 
@@ -636,9 +695,22 @@ class ReasoningEngine:
         tools_executed = False
         seen_signatures: dict[str, int] = {}
         use_native = getattr(settings, "use_native_tool_calling", True)
-        tools_schema = self._build_tools_schema() if use_native else None
+        # ===== P1-2：CostGuard 重置 + ToolSelector 自动披露 =====
+        self._cost_guard.iterations = 0
+        self._cost_guard.tokens_used = 0
+        self._cost_guard.tool_calls_used = 0
+        self._auto_disclose(user_message)
+        tools_schema = self._build_active_tools_schema() if use_native else None
 
         for iteration in range(1, settings.max_iterations + 1):
+            # ===== P1-2：CostGuard 预算检查 =====
+            if not self._cost_guard.can_continue():
+                logger.warning(
+                    "CostGuard stopped stream reasoning: %s",
+                    self._cost_guard.exceeded_detail(),
+                )
+                break
+
             logger.info("===== Reasoning stream iteration %s/%s =====", iteration, settings.max_iterations)
             near_limit = iteration >= settings.max_iterations - 2
 
@@ -755,6 +827,9 @@ class ReasoningEngine:
 
             tool_results = await self._tool_executor.execute(decision.tool_calls)
             tools_executed = True
+            # ===== P1-2：CostGuard 消耗记账 =====
+            self._cost_guard.iterations = iteration
+            self._cost_guard.tool_calls_used += len(decision.tool_calls)
             trace.tool_results = tool_results
             self._record_trace(trace)
 

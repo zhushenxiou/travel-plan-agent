@@ -26,6 +26,25 @@ class AuditLogger:
         self._current_date: str = ""
         self._log_file: Path | None = None
         self._rotate_if_needed()
+        # P2-3：启动时清理超过保留期的审计日志文件
+        self._cleanup_expired_logs()
+
+    def _cleanup_expired_logs(self) -> None:
+        """P2-3：删除超过 audit_retention_days 的 audit-YYYY-MM-DD.jsonl 文件。"""
+        retention_days = getattr(settings, "audit_retention_days", 30)
+        if retention_days <= 0:
+            return
+        try:
+            cutoff = datetime.now(timezone.utc).timestamp() - retention_days * 86400
+            for f in self._log_dir.glob("audit-*.jsonl"):
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                        logger.info("Audit log cleanup: removed %s", f.name)
+                except Exception:
+                    logger.warning("Audit log cleanup: failed to stat/remove %s", f, exc_info=True)
+        except Exception:
+            logger.warning("Audit log cleanup failed", exc_info=True)
 
     def _rotate_if_needed(self) -> None:
         """按日期轮转：每天一个 audit-YYYY-MM-DD.jsonl 文件。"""

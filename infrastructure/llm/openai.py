@@ -11,6 +11,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from config import settings
+from domain.shared.audit.context import AuditContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,25 @@ class LLMResponse:
 
 
 class OpenAILLM:
-    def __init__(self, audit_logger: Any = None) -> None:
-        api_key: str = settings.api_key or os.getenv(key="DASHSCOPE_API_KEY", default="")
-        self._client = AsyncOpenAI(api_key=api_key, base_url=settings.base_url)
-        self.model: str = settings.model
+    def __init__(
+        self,
+        audit_logger: Any = None,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        # P1-15：允许注入 api_key/base_url/model，用于构建 FallbackLLM 的备用 provider；
+        # 不传则从 settings 读取（保持向后兼容）。
+        resolved_key = api_key or settings.api_key or os.getenv(key="DASHSCOPE_API_KEY", default="")
+        resolved_base = base_url or settings.base_url
+        self._client = AsyncOpenAI(api_key=resolved_key, base_url=resolved_base)
+        self.model: str = model or settings.model
         self._audit_logger = audit_logger
 
     def set_audit_context(self, *, session_id: str, user_id: str, trace_id: str = "") -> None:
-        self._audit_session_id = session_id
-        self._audit_user_id = user_id
-        self._audit_trace_id = trace_id
+        # P0-5：用 ContextVar 替代实例属性，确保 OpenAILLM 单例下并发请求审计上下文隔离
+        AuditContext.set(session_id=session_id, user_id=user_id, trace_id=trace_id)
 
     async def complete(self, *, system: str, messages: list[dict[str, Any]]) -> str:
         start = time.monotonic()
@@ -52,9 +62,9 @@ class OpenAILLM:
 
         if self._audit_logger:
             self._audit_logger.log_llm_call(
-                session_id=getattr(self, "_audit_session_id", ""),
-                user_id=getattr(self, "_audit_user_id", ""),
-                trace_id=getattr(self, "_audit_trace_id", ""),
+                session_id=AuditContext.get().session_id,
+                user_id=AuditContext.get().user_id,
+                trace_id=AuditContext.get().trace_id,
                 model=self.model,
                 system_prompt=system,
                 messages=messages,
@@ -87,9 +97,9 @@ class OpenAILLM:
         duration_ms = int((time.monotonic() - start) * 1000)
         if self._audit_logger:
             self._audit_logger.log_llm_call(
-                session_id=getattr(self, "_audit_session_id", ""),
-                user_id=getattr(self, "_audit_user_id", ""),
-                trace_id=getattr(self, "_audit_trace_id", ""),
+                session_id=AuditContext.get().session_id,
+                user_id=AuditContext.get().user_id,
+                trace_id=AuditContext.get().trace_id,
                 model=self.model,
                 system_prompt=system,
                 messages=messages,
@@ -122,9 +132,9 @@ class OpenAILLM:
             content = await self.complete(system=system, messages=messages)
             if self._audit_logger:
                 self._audit_logger.log_llm_call(
-                    session_id=getattr(self, "_audit_session_id", ""),
-                    user_id=getattr(self, "_audit_user_id", ""),
-                    trace_id=getattr(self, "_audit_trace_id", ""),
+                    session_id=AuditContext.get().session_id,
+                    user_id=AuditContext.get().user_id,
+                    trace_id=AuditContext.get().trace_id,
                     model=self.model,
                     system_prompt=system,
                     messages=messages,
@@ -150,9 +160,9 @@ class OpenAILLM:
                 ]
                 raw_output = json.dumps({"content": content, "tool_calls": tc_data}, ensure_ascii=False)
             self._audit_logger.log_llm_call(
-                session_id=getattr(self, "_audit_session_id", ""),
-                user_id=getattr(self, "_audit_user_id", ""),
-                trace_id=getattr(self, "_audit_trace_id", ""),
+                session_id=AuditContext.get().session_id,
+                user_id=AuditContext.get().user_id,
+                trace_id=AuditContext.get().trace_id,
                 model=self.model,
                 system_prompt=system,
                 messages=messages,
@@ -189,9 +199,9 @@ class OpenAILLM:
 
         if self._audit_logger:
             self._audit_logger.log_llm_call(
-                session_id=getattr(self, "_audit_session_id", ""),
-                user_id=getattr(self, "_audit_user_id", ""),
-                trace_id=getattr(self, "_audit_trace_id", ""),
+                session_id=AuditContext.get().session_id,
+                user_id=AuditContext.get().user_id,
+                trace_id=AuditContext.get().trace_id,
                 model=self.model,
                 system_prompt=system,
                 messages=[{"role": "user", "content": user}],

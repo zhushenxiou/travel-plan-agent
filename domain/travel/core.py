@@ -1,24 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 from typing import Any
 
 from config import settings
 from infrastructure.mcp.runtime import MCPProxyRuntime
 from infrastructure.tools.executor import ToolExecutor
 from infrastructure.tools.registry import ToolRegistry
-from domain.reasoning.context_manager import ContextManager
+from domain.travel.context_manager import ContextManager
 from infrastructure.llm.openai import OpenAILLM
 from infrastructure.mcp.catalog import MCPCatalog
-from domain.memory.manager import MemoryManager, SessionMemory, DualLayerMemoryManager
+from domain.memory.manager import SessionMemory, DualLayerMemoryManager
 from domain.memory.memory_extractor import MemoryExtractor
 from domain.memory.memory_distiller import MemoryDistiller
-from domain.reasoning.prompt_context import PromptContext
-from domain.reasoning.prompting import PromptBuilder
+from domain.travel.prompt_context import PromptContext
+from domain.travel.prompting import PromptBuilder
 from domain.reasoning.engine import AskUserNeeded, ReasoningEngine, ConfirmationNeeded
 from domain.shared.runtime.facts import answer_date_or_time_query, current_datetime_text
 from domain.user.session.manager import SessionManager
@@ -68,7 +70,6 @@ class Agent:
         self._tool_registry = tool_registry
         self._tool_executor = tool_executor
         self._memory = SessionMemory()
-        self._memory_manager = MemoryManager()
         self._dual_memory = DualLayerMemoryManager()
         self._memory_extractor = MemoryExtractor(llm)
         self._memory_distiller = MemoryDistiller(llm)
@@ -88,72 +89,100 @@ class Agent:
         self._profile_manager = profile_manager or ProfileManager()
         self._audit_logger = audit_logger
 
-    async def chat(
+    # ===== P1-6：chat 与 chat_stream 共用的上下文准备与收尾逻辑 =====
+
+    @dataclass
+    class ChatPreparation:
+        """chat / chat_stream 共用的上下文准备结果。
+
+        early_action 为 None 时表示进入 ReAct 推理主路径；
+        否则调用方需根据 kind 自行处理（保存/trace/yield/return）后提前结束。
+        """
+        session: Any
+        task: Any
+        intent: Any
+        ops_result: Any
+        emotion_result: Any
+        system: str
+        tools: list[str]
+        selected_mcp_tools: list
+        connected_mcp_tools: list
+        memory_context: str
+        dual_memory_context: str
+        mcp_context: str
+        profile_context: str
+        urgency_context: str
+        prompt_context: Any
+        early_action: tuple[str, Any] | None = field(default=None)
+
+    async def _prepare_chat_context(
         self,
         *,
         session_id: str,
+        user_id: str | None,
         message: str,
-        user_id: str | None = None,
-        trace_id: str = "",
-    ) -> dict[str, str]:
-        memory_scope = str(user_id or session_id)
-        trace_id = trace_id or uuid.uuid4().hex[:16]
-        start_time = time.monotonic()
-        logger.info("Agent chat start: session_id=%s user_id=%s trace_id=%s message=%s", session_id, user_id or session_id, trace_id, message[:100])
+        memory_scope: str,
+        trace_id: str,
+    ) -> "Agent.ChatPreparation":
+        """chat 与 chat_stream 共用的上下文准备逻辑。
+
+        流程：设置审计上下文 → 加载 session/task → 追加用户消息 → 检查直答/紧急/快速回复/行程确认
+        → 构建工具与记忆上下文 → 生成 system prompt → 写入审计日志。
+        命中早退路径时设置 early_action 由调用方处理。
+        """
         self._llm.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
         self._reasoning.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
         self._tool_executor.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
         session = self._session_store.get(session_id)
         task = self._task_store.get(session_id, user_id=memory_scope)
         session.append("user", message)
-        self._memory_manager.maybe_learn_from_message(message, scope_id=memory_scope)
+
+        # 直答：运行时事实（日期/时间）
         direct_runtime_answer = answer_date_or_time_query(message)
         if direct_runtime_answer:
-            session.append("assistant", direct_runtime_answer)
-            self._memory.refresh_summary(session)
-            self._session_store.save(session)
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=direct_runtime_answer)
-            task.trace_summary = "Answered directly from runtime facts."
-            self._task_store.save(task)
-            self._trace_store.put(
-                RunTrace(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    user_message=message,
-                    reply=direct_runtime_answer,
-                    intent="runtime_fact",
-                    goal="answer date/time from runtime facts",
-                    tools=[],
-                    trace_steps=[],
-                    events=[{"kind": "runtime_fact", "message": "Answered from runtime clock"}],
-                )
+            return self.ChatPreparation(
+                session=session, task=task, intent=None, ops_result=None,
+                emotion_result=None, system="", tools=[], selected_mcp_tools=[],
+                connected_mcp_tools=[], memory_context="", dual_memory_context="",
+                mcp_context="", profile_context="", urgency_context="",
+                prompt_context=None,
+                early_action=("direct_runtime_answer", direct_runtime_answer),
             )
-            return {"status": "completed", "reply": direct_runtime_answer}
 
+        # 意图识别
         ops_result: TravelIntentResult | None = None
         if self._ops_classifier:
-            ops_result = await self._ops_classifier.classify(message)
+            # 构建对话历史（不含当前消息），用于 missing_info 上下文检查
+            history_turns = session.turns[:-1] if len(session.turns) > 1 else []
+            conversation_history = [{"role": t.role, "content": t.content} for t in history_turns] if history_turns else None
+
+            ops_result = await self._ops_classifier.classify(
+                message, conversation_history=conversation_history
+            )
+            # P2-11：用对话历史重新检查 missing_info，避免当前消息已提供但正则未匹配的情况
+            if ops_result and ops_result.missing_info and conversation_history:
+                try:
+                    context_missing = await self._ops_classifier.check_missing_info_with_context(
+                        message=message,
+                        intent=ops_result.intent,
+                        conversation_history=conversation_history,
+                    )
+                    ops_result.missing_info = context_missing
+                except Exception as e:
+                    logger.warning("Failed to re-check missing_info with context: %s", e)
             intent = self._ops_classifier.to_intent_result(ops_result)
             if self._audit_logger:
                 self._audit_logger.log_intent_classify(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    trace_id=trace_id,
-                    message=message,
-                    intent=ops_result.intent.value,
-                    goal=intent.goal,
-                    confidence=ops_result.confidence,
-                    classifier="travel_classifier",
+                    session_id=session_id, user_id=memory_scope, trace_id=trace_id,
+                    message=message, intent=ops_result.intent.value, goal=intent.goal,
+                    confidence=ops_result.confidence, classifier="travel_classifier",
                     raw_llm_output=getattr(ops_result, "raw_output", ""),
                 )
         else:
             from domain.shared.types import IntentResult
             intent = IntentResult(
-                intent=IntentType.TASK,
-                goal=message[:100],
-                fast_reply=False,
-                force_tool=True,
-                tool_hints=[],
+                intent=IntentType.TASK, goal=message[:100],
+                fast_reply=False, force_tool=True, tool_hints=[],
             )
         logger.info(
             "Intent resolved: intent=%s fast_reply=%s force_tool=%s travel_intent=%s",
@@ -161,110 +190,88 @@ class Agent:
             ops_result.intent.value if ops_result else "none",
         )
 
+        # 情绪检测
         emotion_result: EmotionResult | None = None
         if self._emotion_detector:
             emotion_result = await self._emotion_detector.detect(message)
             if self._audit_logger:
                 self._audit_logger.log_emotion_detect(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    trace_id=trace_id,
-                    message=message,
-                    emotion=emotion_result.emotion.value,
-                    score=emotion_result.score,
-                    confidence=emotion_result.confidence,
+                    session_id=session_id, user_id=memory_scope, trace_id=trace_id,
+                    message=message, emotion=emotion_result.emotion.value,
+                    score=emotion_result.score, confidence=emotion_result.confidence,
                     response_style=emotion_result.response_style,
                     raw_llm_output=getattr(emotion_result, "raw_output", ""),
                 )
 
+        # 紧急关键词
         emergency_reply = self._check_emergency_keywords(message)
         if emergency_reply:
-            session.append("assistant", emergency_reply)
-            self._memory.refresh_summary(session)
-            self._session_store.save(session)
-            return {"status": "completed", "reply": emergency_reply}
+            return self.ChatPreparation(
+                session=session, task=task, intent=intent, ops_result=ops_result,
+                emotion_result=emotion_result, system="", tools=[], selected_mcp_tools=[],
+                connected_mcp_tools=[], memory_context="", dual_memory_context="",
+                mcp_context="", profile_context="", urgency_context="",
+                prompt_context=None,
+                early_action=("emergency_reply", emergency_reply),
+            )
 
         task.mark_in_progress(goal=intent.goal, latest_user_message=message)
         self._handle_cache_invalidation(task, message, ops_result)
         self._task_store.save(task)
         logger.info(
             "Intent analyzed: session_id=%s user_id=%s intent=%s emotion=%s force_tool=%s",
-            session_id,
-            memory_scope,
+            session_id, memory_scope,
             ops_result.intent.value if ops_result else intent.intent.value,
             emotion_result.emotion.value if emotion_result else "none",
             intent.force_tool,
         )
 
+        # 快速回复路径
         if intent.fast_reply and intent.intent in {IntentType.CHAT, IntentType.QUERY}:
             logger.warning("FAST_REPLY path triggered! intent=%s fast_reply=%s", intent.intent.value, intent.fast_reply)
             system = self._prompt_builder.build_fast_reply_system(intent)
-            reply = await self._llm.complete(
-                system=system,
-                messages=[{"role": "user", "content": message}],
+            return self.ChatPreparation(
+                session=session, task=task, intent=intent, ops_result=ops_result,
+                emotion_result=emotion_result, system=system, tools=[], selected_mcp_tools=[],
+                connected_mcp_tools=[], memory_context="", dual_memory_context="",
+                mcp_context="", profile_context="", urgency_context="",
+                prompt_context=None,
+                early_action=("fast_reply", system),
             )
-            session.append("assistant", reply)
-            self._memory.refresh_summary(session)
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
-            task.trace_summary = "Fast reply path without tools."
-            self._task_store.save(task)
-            self._trace_store.put(
-                RunTrace(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    user_message=message,
-                    reply=reply,
-                    intent=intent.intent.value,
-                    goal=intent.goal,
-                    tools=[],
-                    memory_context="",
-                    trace_steps=[],
-                    events=[{"kind": "fast_reply", "message": "Handled without tools"}],
-                )
-            )
-            logger.info("Agent fast reply complete: session_id=%s", session_id)
-            self._session_store.save(session)
-            return {"status": "completed", "reply": reply}
 
+        # 行程确认路径
         from domain.travel.intent.travel_schema import TravelIntentType
         if ops_result and ops_result.intent == TravelIntentType.ITINERARY_CONFIRM:
             logger.info("itinerary_confirm: bypassing LLM, directly calling generate_itinerary_overview")
-            reply = await self._direct_generate_itinerary(
-                session=session,
-                session_id=session_id,
-                user_id=memory_scope,
-                ops_result=ops_result,
+            return self.ChatPreparation(
+                session=session, task=task, intent=intent, ops_result=ops_result,
+                emotion_result=emotion_result, system="", tools=[], selected_mcp_tools=[],
+                connected_mcp_tools=[], memory_context="", dual_memory_context="",
+                mcp_context="", profile_context="", urgency_context="",
+                prompt_context=None,
+                early_action=("itinerary_confirm", ops_result),
             )
-            session.append("assistant", reply)
-            self._memory.refresh_summary(session)
-            self._session_store.save(session)
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
-            task.trace_summary = "Direct itinerary generation (bypassed LLM reasoning)."
-            self._task_store.save(task)
-            self._trace_store.put(
-                RunTrace(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    user_message=message,
-                    reply=reply,
-                    intent=intent.intent.value,
-                    goal=intent.goal,
-                    tools=["generate_itinerary_overview"],
-                    memory_context="",
-                    trace_steps=[],
-                    events=[{"kind": "direct_tool_call", "message": "generate_itinerary_overview called directly"}],
-                )
-            )
-            logger.info("Agent itinerary confirm complete: session_id=%s", session_id)
-            await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
-            return {"status": "completed", "reply": reply}
 
-        base_tools = self._tool_registry.list_names(
-            intent.tool_hints,
-            exclude_categories=["MCP"],
-        )
+        # 缺失信息澄清路径：TRIP_PLANNING 且存在 missing_info 时，先追问再进入 ReAct
+        if ops_result and ops_result.intent == TravelIntentType.TRIP_PLANNING and ops_result.missing_info:
+            logger.info(
+                "trip_planning with missing_info: %s, generating clarification before ReAct",
+                ops_result.missing_info,
+            )
+            clarification_question = self._build_clarification_question(ops_result)
+            return self.ChatPreparation(
+                session=session, task=task, intent=intent, ops_result=ops_result,
+                emotion_result=emotion_result, system="", tools=[], selected_mcp_tools=[],
+                connected_mcp_tools=[], memory_context="", dual_memory_context="",
+                mcp_context="", profile_context="", urgency_context="",
+                prompt_context=None,
+                early_action=("need_input", clarification_question),
+            )
+
+        # 构建 ReAct 上下文
+        base_tools = self._tool_registry.list_names(intent.tool_hints, exclude_categories=["MCP"])
         context = self._context_manager.prepare(session, current_message=message)
-        memory_context = self._memory_manager.build_context(message, scope_id=memory_scope)
+        memory_context = ""
         dual_memory_context = ""
         if user_id:
             dual_memory_context = self._dual_memory.build_full_context(user_id, query=message)
@@ -293,17 +300,12 @@ class Agent:
 
         logger.info(
             "Agent reasoning path: session_id=%s user_id=%s tools=%s memory=%s mcp=%s emotion=%s",
-            session_id,
-            memory_scope,
-            ",".join(tools),
-            bool(memory_context),
+            session_id, memory_scope, ",".join(tools), bool(memory_context),
             ",".join(ref.proxy_name for ref in connected_mcp_tools),
             emotion_result.emotion.value if emotion_result else "none",
         )
         cached_tool_context = self._build_cached_tool_context(task)
-        missing_info_context = self._build_missing_info_context(
-            ops_result, dual_memory_context, user_id
-        )
+        missing_info_context = self._build_missing_info_context(ops_result, dual_memory_context, user_id)
         itinerary_confirm_context = self._build_itinerary_confirm_context(
             ops_result, session, user_id=memory_scope, session_id=session_id
         )
@@ -326,25 +328,210 @@ class Agent:
             logger.warning("itinerary_confirm: confirm context is EMPTY despite ITINERARY_CONFIRM intent")
         if self._audit_logger:
             self._audit_logger.log_context_built(
-                session_id=session_id,
-                user_id=memory_scope,
-                trace_id=trace_id,
-                system_prompt=system,
-                tools=tools,
-                memory_context=memory_context,
-                dual_memory_context=dual_memory_context,
-                mcp_context=mcp_context,
-                profile_context=profile_context,
-                emotion_context=urgency_context,
+                session_id=session_id, user_id=memory_scope, trace_id=trace_id,
+                system_prompt=system, tools=tools, memory_context=memory_context,
+                dual_memory_context=dual_memory_context, mcp_context=mcp_context,
+                profile_context=profile_context, emotion_context=urgency_context,
                 selected_mcp_tools=[ref.proxy_name for ref in selected_mcp_tools],
                 connected_mcp_tools=[ref.proxy_name for ref in connected_mcp_tools],
             )
+
+        return self.ChatPreparation(
+            session=session, task=task, intent=intent, ops_result=ops_result,
+            emotion_result=emotion_result, system=system, tools=tools,
+            selected_mcp_tools=selected_mcp_tools, connected_mcp_tools=connected_mcp_tools,
+            memory_context=memory_context, dual_memory_context=dual_memory_context,
+            mcp_context=mcp_context, profile_context=profile_context,
+            urgency_context=urgency_context, prompt_context=prompt_context,
+            early_action=None,
+        )
+
+    async def _finalize_chat(
+        self,
+        *,
+        session_id: str,
+        user_id: str | None,
+        memory_scope: str,
+        trace_id: str,
+        start_time: float,
+        message: str,
+        prep: "Agent.ChatPreparation",
+        reply: str,
+        status: str,
+        events: list[dict],
+    ) -> None:
+        """chat 与 chat_stream 共用的收尾逻辑：保存 session/task/trace/audit/memory。
+
+        reasoning 调用（run / run_stream）与 chunk 流式输出由调用方自行处理，
+        本方法仅负责后置的持久化、trace、审计与记忆蒸馏。
+        """
+        session = prep.session
+        task = prep.task
+        intent = prep.intent
+        emotion_result = prep.emotion_result
+        session.append("assistant", reply)
+        self._memory.refresh_summary(session)
+        self._session_store.save(session, user_id=memory_scope)
+        if status == "completed":
+            task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+        self._cache_tool_results_from_trace(task)
+        task.trace_summary = self._summarize_trace()
+        self._task_store.save(task)
+        self._trace_store.put(
+            RunTrace(
+                session_id=session_id,
+                user_id=memory_scope,
+                user_message=message,
+                reply=reply,
+                intent=intent.intent.value,
+                goal=intent.goal,
+                tools=prep.tools,
+                memory_context=prep.memory_context,
+                trace_steps=list(self._reasoning.last_trace),
+                events=events,
+            )
+        )
+        logger.info("Agent reasoning complete: session_id=%s user_id=%s", session_id, memory_scope)
+        if self._audit_logger:
+            self._audit_logger.log_session_complete(
+                session_id=session_id,
+                user_id=memory_scope,
+                trace_id=trace_id,
+                user_message=message,
+                reply=reply,
+                intent=intent.intent.value,
+                emotion=emotion_result.emotion.value if emotion_result else "none",
+                total_duration_ms=int((time.monotonic() - start_time) * 1000),
+                trace_summary=self._summarize_trace(),
+            )
+        await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
+
+    async def chat(
+        self,
+        *,
+        session_id: str,
+        message: str,
+        user_id: str | None = None,
+        trace_id: str = "",
+    ) -> dict[str, str]:
+        memory_scope = str(user_id or session_id)
+        trace_id = trace_id or uuid.uuid4().hex[:16]
+        start_time = time.monotonic()
+        logger.info("Agent chat start: session_id=%s user_id=%s trace_id=%s message=%s", session_id, user_id or session_id, trace_id, message[:100])
+
+        prep = await self._prepare_chat_context(
+            session_id=session_id, user_id=user_id, message=message,
+            memory_scope=memory_scope, trace_id=trace_id,
+        )
+        session = prep.session
+        task = prep.task
+
+        # 处理早退动作（直答/紧急/快速回复/行程确认）
+        if prep.early_action:
+            kind, payload = prep.early_action
+            if kind == "direct_runtime_answer":
+                reply = payload
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+                task.trace_summary = "Answered directly from runtime facts."
+                self._task_store.save(task)
+                self._trace_store.put(
+                    RunTrace(
+                        session_id=session_id, user_id=memory_scope,
+                        user_message=message, reply=reply,
+                        intent="runtime_fact", goal="answer date/time from runtime facts",
+                        tools=[], trace_steps=[],
+                        events=[{"kind": "runtime_fact", "message": "Answered from runtime clock"}],
+                    )
+                )
+                return {"status": "completed", "reply": reply}
+
+            if kind == "emergency_reply":
+                reply = payload
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                return {"status": "completed", "reply": reply}
+
+            if kind == "fast_reply":
+                system = payload
+                reply = await self._llm.complete(
+                    system=system,
+                    messages=[{"role": "user", "content": message}],
+                )
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+                task.trace_summary = "Fast reply path without tools."
+                self._task_store.save(task)
+                self._trace_store.put(
+                    RunTrace(
+                        session_id=session_id, user_id=memory_scope,
+                        user_message=message, reply=reply,
+                        intent=prep.intent.intent.value, goal=prep.intent.goal,
+                        tools=[], memory_context="", trace_steps=[],
+                        events=[{"kind": "fast_reply", "message": "Handled without tools"}],
+                    )
+                )
+                logger.info("Agent fast reply complete: session_id=%s", session_id)
+                self._session_store.save(session, user_id=memory_scope)
+                return {"status": "completed", "reply": reply}
+
+            if kind == "itinerary_confirm":
+                ops_result = payload
+                logger.info("itinerary_confirm: bypassing LLM, directly calling generate_itinerary_overview")
+                reply, itinerary_id = await self._direct_generate_itinerary(
+                    session=session, session_id=session_id,
+                    user_id=memory_scope, ops_result=ops_result,
+                )
+                # P1-13：结构化保存 itinerary_id，供 TravelAgent 通过 actions 事件下发
+                if itinerary_id:
+                    task.metadata["last_itinerary_id"] = itinerary_id
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+                task.trace_summary = "Direct itinerary generation (bypassed LLM reasoning)."
+                self._task_store.save(task)
+                self._trace_store.put(
+                    RunTrace(
+                        session_id=session_id, user_id=memory_scope,
+                        user_message=message, reply=reply,
+                        intent=prep.intent.intent.value, goal=prep.intent.goal,
+                        tools=["generate_itinerary_overview"], memory_context="",
+                        trace_steps=[],
+                        events=[{"kind": "direct_tool_call", "message": "generate_itinerary_overview called directly"}],
+                    )
+                )
+                logger.info("Agent itinerary confirm complete: session_id=%s", session_id)
+                await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
+                result = {"status": "completed", "reply": reply}
+                if itinerary_id:
+                    result["itinerary_id"] = itinerary_id
+                return result
+
+            if kind == "need_input":
+                reply = payload
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                task.mark_waiting(
+                    status=TaskStatus.NEEDS_USER_INPUT,
+                    prompt=reply,
+                    reply=reply,
+                )
+                logger.info("Agent need_input (early): session_id=%s question=%s", session_id, reply[:100])
+                return {"status": "needs_user_input", "reply": reply}
+
+        # ReAct 推理主路径
         status = "completed"
         try:
             reply = await self._reasoning.run(
-                system_prompt=system,
+                system_prompt=prep.system,
                 user_message=message,
-                force_tool=intent.force_tool,
+                force_tool=prep.intent.force_tool,
             )
         except AskUserNeeded as exc:
             reply = exc.question
@@ -362,62 +549,30 @@ class Agent:
                 prompt=exc.prompt,
                 reply=reply,
             )
-        session.append("assistant", reply)
-        self._memory.refresh_summary(session)
-        self._session_store.save(session)
-        if status == "completed":
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
-        self._cache_tool_results_from_trace(task)
-        task.trace_summary = self._summarize_trace()
-        self._task_store.save(task)
-        self._trace_store.put(
-            RunTrace(
-                session_id=session_id,
-                user_id=memory_scope,
-                user_message=message,
-                reply=reply,
-                intent=intent.intent.value,
-                goal=intent.goal,
-                tools=tools,
-                memory_context=memory_context,
-                trace_steps=list(self._reasoning.last_trace),
-                events=[
-                    {"kind": "context", "message": "Prepared context", "payload": {"trimmed": context.was_trimmed}},
-                    {
-                        "kind": "memory",
-                        "message": "Built memory context",
-                        "payload": {
-                            "has_memory": bool(memory_context),
-                            "scope_id": memory_scope,
-                        },
-                    },
-                    {
-                        "kind": "mcp",
-                        "message": "Built MCP context",
-                        "payload": {
-                            "has_mcp": bool(mcp_context),
-                            "selected_tools": [ref.proxy_name for ref in selected_mcp_tools],
-                            "connected_tools": [ref.proxy_name for ref in connected_mcp_tools],
-                        },
-                    },
-                    {"kind": "result", "message": "Agent run finished", "payload": {"status": status}},
-                ],
-            )
+
+        events = [
+            {"kind": "context", "message": "Prepared context", "payload": {"trimmed": prep.prompt_context.prepared_context.was_trimmed}},
+            {
+                "kind": "memory",
+                "message": "Built memory context",
+                "payload": {"has_memory": bool(prep.memory_context), "scope_id": memory_scope},
+            },
+            {
+                "kind": "mcp",
+                "message": "Built MCP context",
+                "payload": {
+                    "has_mcp": bool(prep.mcp_context),
+                    "selected_tools": [ref.proxy_name for ref in prep.selected_mcp_tools],
+                    "connected_tools": [ref.proxy_name for ref in prep.connected_mcp_tools],
+                },
+            },
+            {"kind": "result", "message": "Agent run finished", "payload": {"status": status}},
+        ]
+        await self._finalize_chat(
+            session_id=session_id, user_id=user_id, memory_scope=memory_scope,
+            trace_id=trace_id, start_time=start_time, message=message,
+            prep=prep, reply=reply, status=status, events=events,
         )
-        logger.info("Agent reasoning complete: session_id=%s user_id=%s", session_id, memory_scope)
-        if self._audit_logger:
-            self._audit_logger.log_session_complete(
-                session_id=session_id,
-                user_id=memory_scope,
-                trace_id=trace_id,
-                user_message=message,
-                reply=reply,
-                intent=intent.intent.value,
-                emotion=emotion_result.emotion.value if emotion_result else "none",
-                total_duration_ms=int((time.monotonic() - start_time) * 1000),
-                trace_summary=self._summarize_trace(),
-            )
-        await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
         return {"status": status, "reply": reply, "trace_id": trace_id}
 
     async def chat_stream(
@@ -441,190 +596,101 @@ class Agent:
         trace_id = trace_id or uuid.uuid4().hex[:16]
         start_time = time.monotonic()
         logger.info("Agent chat_stream start: session_id=%s user_id=%s trace_id=%s", session_id, user_id or session_id, trace_id)
-        self._llm.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
-        self._reasoning.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
-        self._tool_executor.set_audit_context(session_id=session_id, user_id=memory_scope, trace_id=trace_id)
-        session = self._session_store.get(session_id)
-        task = self._task_store.get(session_id, user_id=memory_scope)
-        session.append("user", message)
-        self._memory_manager.maybe_learn_from_message(message, scope_id=memory_scope)
 
-        # 直接从运行时事实回答
-        direct_runtime_answer = answer_date_or_time_query(message)
-        if direct_runtime_answer:
-            session.append("assistant", direct_runtime_answer)
-            self._memory.refresh_summary(session)
-            self._session_store.save(session)
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=direct_runtime_answer)
-            self._task_store.save(task)
-            yield {"type": "chunk", "data": direct_runtime_answer}
-            yield {"type": "done", "data": "completed"}
-            return
+        prep = await self._prepare_chat_context(
+            session_id=session_id, user_id=user_id, message=message,
+            memory_scope=memory_scope, trace_id=trace_id,
+        )
+        session = prep.session
+        task = prep.task
 
-        # 意图识别
-        ops_result: TravelIntentResult | None = None
-        if self._ops_classifier:
-            ops_result = await self._ops_classifier.classify(message)
-            intent = self._ops_classifier.to_intent_result(ops_result)
-            if self._audit_logger:
-                self._audit_logger.log_intent_classify(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    trace_id=trace_id,
-                    message=message,
-                    intent=ops_result.intent.value,
-                    goal=intent.goal,
-                    confidence=ops_result.confidence,
-                    classifier="travel_classifier",
-                    raw_llm_output=getattr(ops_result, "raw_output", ""),
+        # 处理早退动作（直答/紧急/快速回复/行程确认）
+        if prep.early_action:
+            kind, payload = prep.early_action
+            if kind == "direct_runtime_answer":
+                reply = payload
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+                self._task_store.save(task)
+                yield {"type": "chunk", "data": reply}
+                yield {"type": "done", "data": "completed"}
+                return
+
+            if kind == "emergency_reply":
+                reply = payload
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                yield {"type": "chunk", "data": reply}
+                yield {"type": "done", "data": "completed"}
+                return
+
+            # fast_reply / itinerary_confirm / 主推理路径都需要先发 thinking 状态
+            yield {"type": "status", "data": "thinking"}
+
+            if kind == "fast_reply":
+                system = payload
+                reply = ""
+                async for chunk in self._llm.stream_complete(system=system, messages=[{"role": "user", "content": message}]):
+                    reply += chunk
+                    yield {"type": "chunk", "data": chunk}
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+                self._task_store.save(task)
+                self._session_store.save(session, user_id=memory_scope)
+                yield {"type": "done", "data": "completed"}
+                return
+
+            if kind == "itinerary_confirm":
+                ops_result = payload
+                reply, itinerary_id = await self._direct_generate_itinerary(
+                    session=session, session_id=session_id, user_id=memory_scope, ops_result=ops_result,
                 )
+                # P1-13：结构化保存 itinerary_id，供 TravelAgent 通过 actions 事件下发
+                if itinerary_id:
+                    task.metadata["last_itinerary_id"] = itinerary_id
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
+                self._task_store.save(task)
+                await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
+                yield {"type": "chunk", "data": reply}
+                # done event 携带结构化 itinerary_id（如果有），供 TravelAgent 读取
+                done_data = {"status": "completed", "itinerary_id": itinerary_id} if itinerary_id else "completed"
+                yield {"type": "done", "data": done_data}
+                return
+
+            if kind == "need_input":
+                reply = payload
+                session.append("assistant", reply)
+                self._memory.refresh_summary(session)
+                self._session_store.save(session, user_id=memory_scope)
+                task.mark_waiting(
+                    status=TaskStatus.NEEDS_USER_INPUT,
+                    prompt=reply,
+                    reply=reply,
+                )
+                logger.info("Agent need_input (early stream): session_id=%s question=%s", session_id, reply[:100])
+                yield {"type": "chunk", "data": reply}
+                yield {"type": "done", "data": "needs_user_input"}
+                return
+
         else:
-            from domain.shared.types import IntentResult
-            intent = IntentResult(
-                intent=IntentType.TASK,
-                goal=message[:100],
-                fast_reply=False,
-                force_tool=True,
-                tool_hints=[],
-            )
+            # 主推理路径也需要 thinking 状态
+            yield {"type": "status", "data": "thinking"}
 
-        # 情绪检测
-        emotion_result: EmotionResult | None = None
-        if self._emotion_detector:
-            emotion_result = await self._emotion_detector.detect(message)
-            if self._audit_logger:
-                self._audit_logger.log_emotion_detect(
-                    session_id=session_id,
-                    user_id=memory_scope,
-                    trace_id=trace_id,
-                    message=message,
-                    emotion=emotion_result.emotion.value,
-                    score=emotion_result.score,
-                    confidence=emotion_result.confidence,
-                    response_style=emotion_result.response_style,
-                    raw_llm_output=getattr(emotion_result, "raw_output", ""),
-                )
-
-        # 紧急关键词
-        emergency_reply = self._check_emergency_keywords(message)
-        if emergency_reply:
-            session.append("assistant", emergency_reply)
-            self._memory.refresh_summary(session)
-            self._session_store.save(session)
-            yield {"type": "chunk", "data": emergency_reply}
-            yield {"type": "done", "data": "completed"}
-            return
-
-        task.mark_in_progress(goal=intent.goal, latest_user_message=message)
-        self._handle_cache_invalidation(task, message, ops_result)
-        self._task_store.save(task)
-
-        yield {"type": "status", "data": "thinking"}
-
-        # 快速回复路径
-        if intent.fast_reply and intent.intent in {IntentType.CHAT, IntentType.QUERY}:
-            system = self._prompt_builder.build_fast_reply_system(intent)
-            reply = ""
-            async for chunk in self._llm.stream_complete(system=system, messages=[{"role": "user", "content": message}]):
-                reply += chunk
-                yield {"type": "chunk", "data": chunk}
-            session.append("assistant", reply)
-            self._memory.refresh_summary(session)
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
-            self._task_store.save(task)
-            self._session_store.save(session)
-            yield {"type": "done", "data": "completed"}
-            return
-
-        # 行程确认路径
-        from domain.travel.intent.travel_schema import TravelIntentType
-        if ops_result and ops_result.intent == TravelIntentType.ITINERARY_CONFIRM:
-            reply = await self._direct_generate_itinerary(
-                session=session, session_id=session_id, user_id=memory_scope, ops_result=ops_result,
-            )
-            session.append("assistant", reply)
-            self._memory.refresh_summary(session)
-            self._session_store.save(session)
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=reply)
-            self._task_store.save(task)
-            await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
-            yield {"type": "chunk", "data": reply}
-            yield {"type": "done", "data": "completed"}
-            return
-
-        # 构建上下文（与 chat 相同）
-        base_tools = self._tool_registry.list_names(intent.tool_hints, exclude_categories=["MCP"])
-        context = self._context_manager.prepare(session, current_message=message)
-        memory_context = self._memory_manager.build_context(message, scope_id=memory_scope)
-        dual_memory_context = ""
-        if user_id:
-            dual_memory_context = self._dual_memory.build_full_context(user_id, query=message)
-        selected_mcp_tools = self._mcp_catalog.select_tool_refs(message, limit=4)
-        connected_mcp_tools = [
-            ref for ref in selected_mcp_tools
-            if self._mcp_runtime and self._mcp_runtime.adapter_available(ref.proxy_name)
-        ]
-        tools = list(dict.fromkeys(base_tools + [ref.proxy_name for ref in connected_mcp_tools]))
-        mcp_context = self._mcp_catalog.build_prompt_block(tool_refs=connected_mcp_tools)
-
-        urgency_context = ""
-        if emotion_result and emotion_result.response_style != "neutral":
-            strategy = EMOTION_STRATEGIES.get(emotion_result.emotion, {})
-            urgency_context = strategy.get("system_prompt_suffix", "")
-
-        if self._profile_manager and user_id:
-            self._profile_manager.update(
-                memory_scope,
-                intent=intent.intent.value,
-                emotion=emotion_result.emotion.value if emotion_result else None,
-                category=ops_result.rag_keywords[0] if ops_result and ops_result.rag_keywords else None,
-            )
-        profile_context = self._profile_manager.build_context(memory_scope) if self._profile_manager else ""
-
-        cached_tool_context = self._build_cached_tool_context(task)
-        missing_info_context = self._build_missing_info_context(ops_result, dual_memory_context, user_id)
-        itinerary_confirm_context = self._build_itinerary_confirm_context(
-            ops_result, session, user_id=memory_scope, session_id=session_id
-        )
-        prompt_context = PromptContext(
-            prepared_context=context,
-            intent=intent,
-            tools=tools,
-            travel_intent=ops_result.intent.value if ops_result else "",
-            memory_context=memory_context,
-            mcp_context=mcp_context,
-            emotion_context=urgency_context,
-            profile_context=profile_context,
-            cached_tool_context=cached_tool_context,
-            dual_memory_context=dual_memory_context,
-            missing_info_context=missing_info_context,
-            itinerary_confirm_context=itinerary_confirm_context,
-        )
-        system = self._prompt_builder.build_react_system(prompt_context)
-
-        if self._audit_logger:
-            self._audit_logger.log_context_built(
-                session_id=session_id,
-                user_id=memory_scope,
-                trace_id=trace_id,
-                system_prompt=system,
-                tools=tools,
-                memory_context=memory_context,
-                dual_memory_context=dual_memory_context,
-                mcp_context=mcp_context,
-                profile_context=profile_context,
-                emotion_context=urgency_context,
-                selected_mcp_tools=[ref.proxy_name for ref in selected_mcp_tools],
-                connected_mcp_tools=[ref.proxy_name for ref in connected_mcp_tools],
-            )
-
+        # ReAct 推理主路径（流式）
         status = "completed"
+        full_reply = ""
         try:
-            full_reply = ""
             async for chunk in self._reasoning.run_stream(
-                system_prompt=system,
+                system_prompt=prep.system,
                 user_message=message,
-                force_tool=intent.force_tool,
+                force_tool=prep.intent.force_tool,
             ):
                 if chunk.startswith("__status__:"):
                     # 状态通知，转为 tool_status 事件，不写入回复文本
@@ -643,41 +709,14 @@ class Agent:
             task.mark_waiting(status=TaskStatus.NEEDS_CONFIRMATION, prompt=exc.prompt, reply=full_reply)
             yield {"type": "chunk", "data": full_reply}
 
-        session.append("assistant", full_reply)
-        self._memory.refresh_summary(session)
-        self._session_store.save(session)
-        if status == "completed":
-            task.mark_finished(status=TaskStatus.COMPLETED, reply=full_reply)
-        self._cache_tool_results_from_trace(task)
-        task.trace_summary = self._summarize_trace()
-        self._task_store.save(task)
-        self._trace_store.put(
-            RunTrace(
-                session_id=session_id,
-                user_id=memory_scope,
-                user_message=message,
-                reply=full_reply,
-                intent=intent.intent.value,
-                goal=intent.goal,
-                tools=tools,
-                memory_context=memory_context,
-                trace_steps=list(self._reasoning.last_trace),
-                events=[{"kind": "stream_result", "message": "Stream run finished", "payload": {"status": status}}],
-            )
+        events = [
+            {"kind": "stream_result", "message": "Stream run finished", "payload": {"status": status}},
+        ]
+        await self._finalize_chat(
+            session_id=session_id, user_id=user_id, memory_scope=memory_scope,
+            trace_id=trace_id, start_time=start_time, message=message,
+            prep=prep, reply=full_reply, status=status, events=events,
         )
-        if self._audit_logger:
-            self._audit_logger.log_session_complete(
-                session_id=session_id,
-                user_id=memory_scope,
-                trace_id=trace_id,
-                user_message=message,
-                reply=full_reply,
-                intent=intent.intent.value,
-                emotion=emotion_result.emotion.value if emotion_result else "none",
-                total_duration_ms=int((time.monotonic() - start_time) * 1000),
-                trace_summary=self._summarize_trace(),
-            )
-        await self._post_chat_memory_processing(session, session_id, memory_scope, user_id)
         yield {"type": "done", "data": status, "trace_id": trace_id}
 
     def latest_trace(self, session_id: str) -> dict | None:
@@ -772,37 +811,18 @@ class Agent:
                     relevance=0.5,
                 )
 
-            distilled = self._memory_distiller.run_distillation(user_id)
+            # P1-3：在独立线程中调用 sync distiller 方法，避免阻塞事件循环，
+            # 同时让 _compress_content 内部的 asyncio.run() 能正常工作（线程内无运行中的 loop）
+            distilled = await asyncio.to_thread(
+                self._memory_distiller.run_distillation, user_id
+            )
             if distilled > 0:
                 logger.info("Memory distilled: user=%s count=%d", user_id, distilled)
 
-            self._memory_distiller.run_decay(user_id)
+            await asyncio.to_thread(self._memory_distiller.run_decay, user_id)
 
         except Exception:
             logger.warning("Post-chat memory processing failed", exc_info=True)
-
-    def search_memory(
-        self,
-        query: str,
-        limit: int | None = None,
-        *,
-        user_id: str | None = None,
-    ) -> list[dict]:
-        return [
-            item.__dict__
-            for item in self._memory_manager.search(query, limit=limit, scope_id=user_id)
-        ]
-
-    def list_recent_memory(
-        self,
-        limit: int | None = None,
-        *,
-        user_id: str | None = None,
-    ) -> list[dict]:
-        return [
-            item.__dict__
-            for item in self._memory_manager.list_recent(limit=limit, scope_id=user_id)
-        ]
 
     def list_mcp_servers(self) -> list[dict]:
         return [
@@ -866,7 +886,15 @@ class Agent:
         session_id: str,
         user_id: str,
         ops_result: Any,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """直通生成行程概览，绕过 LLM 推理。
+
+        返回 (reply, itinerary_id)：
+          - reply：要追加到 session 的回复文本
+          - itinerary_id：结构化的行程 ID（生成失败时为空字符串），
+            供上层 TravelAgent 通过 actions 事件结构化下发，避免前端
+            从自由文本正则提取（P1-13）。
+        """
         from domain.travel.tools.travel_tools import _generate_itinerary_overview
 
         itinerary_content = ""
@@ -925,11 +953,11 @@ class Agent:
             result = await _generate_itinerary_overview(arguments)
         except Exception as e:
             logger.error("itinerary_confirm: generate_itinerary_overview failed: %s", e, exc_info=True)
-            return "抱歉，行程概览生成失败，请稍后重试。"
+            return "抱歉，行程概览生成失败，请稍后重试。", ""
 
         if result.get("is_error"):
             logger.error("itinerary_confirm: tool returned error: %s", result.get("content"))
-            return "抱歉，行程概览生成失败，请稍后重试。"
+            return "抱歉，行程概览生成失败，请稍后重试。", ""
 
         try:
             data = json.loads(result.get("content", "{}"))
@@ -941,10 +969,11 @@ class Agent:
             return (
                 f"正在为您生成专属行程概览卡片，请稍候...\n\n"
                 f"行程概览已生成！itinerary_id: {itinerary_id}\n"
-                f"点击下方卡片即可查看完整行程"
+                f"点击下方卡片即可查看完整行程",
+                itinerary_id,
             )
         else:
-            return "行程概览已生成！点击侧边栏「我的行程」即可查看。"
+            return "行程概览已生成！点击侧边栏「我的行程」即可查看。", ""
 
     def _build_itinerary_confirm_context(
         self,
@@ -1064,6 +1093,38 @@ class Agent:
 
         return "\n".join(parts)
 
+    def _build_clarification_question(self, ops_result: Any) -> str:
+        """根据 missing_info 构建友好的追问问题，在进入 ReAct 前调用。"""
+        destination = getattr(ops_result, "detected_destination", "")
+        missing = ops_result.missing_info
+
+        # 如果目的地也缺失，优先问目的地
+        if "destination" in missing:
+            return "请问您想去哪个城市旅行？"
+
+        # 目的地已知，友好地追问其他缺失信息
+        destination = destination or "目的地"
+        question = f"好的，您想去{destination}旅行。"
+
+        if "duration" in missing and "dates" in missing:
+            question += "请问您计划旅行几天，以及大概的出发时间？"
+        elif "duration" in missing and "origin" in missing:
+            question += "请问您从哪个城市出发，以及计划旅行几天？"
+        elif "duration" in missing:
+            question += "请问您计划旅行几天？"
+        elif "dates" in missing:
+            question += "请问您大概什么时候出发？"
+        elif "origin" in missing:
+            question += "请问您从哪个城市出发？"
+        elif "budget" in missing:
+            question += "请问您的预算大概是多少？"
+        else:
+            labels = [self._FIELD_LABELS.get(f, f) for f in missing]
+            labels_text = "、".join(labels)
+            question += f"请问您能补充一下{labels_text}吗？"
+
+        return question
+
     def _build_cached_tool_context(self, task: Any) -> str:
         cached = task.get_cached_results()
         if not cached:
@@ -1138,51 +1199,16 @@ class Agent:
                     task.cache_tool_result(name, args, content[:4000])
 
     def list_user_sessions(self, user_id: str) -> list[dict]:
-        from infrastructure.persistence.database import get_connection
-        sessions: list[dict] = []
-        try:
-            conn = get_connection()
-            rows = conn.execute(
-                "SELECT s.session_id, s.summary, s.created_at, s.updated_at, "
-                "(SELECT COUNT(*) FROM session_turns st WHERE st.session_id = s.session_id) AS turn_count, "
-                "(SELECT st2.content FROM session_turns st2 WHERE st2.session_id = s.session_id AND st2.role = 'user' ORDER BY st2.created_at LIMIT 1) AS first_msg "
-                "FROM sessions s "
-                "WHERE s.session_id IN (SELECT DISTINCT session_id FROM tasks WHERE user_id = ?) "
-                "ORDER BY s.updated_at DESC",
-                (user_id,),
-            ).fetchall()
-            for row in rows:
-                sessions.append({
-                    "session_id": row[0],
-                    "title": row[1] or (row[4][:60] if row[4] else "新对话"),
-                    "created_at": row[2] or "",
-                    "updated_at": row[3] or "",
-                    "message_count": row[5] if len(row) > 5 else 0,
-                })
-        except Exception:
-            conn2 = get_connection()
-            rows = conn2.execute(
-                "SELECT session_id, summary, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
-            ).fetchall()
-            for row in rows:
-                sessions.append({
-                    "session_id": row[0],
-                    "title": row[1] or "新对话",
-                    "created_at": row[2] or "",
-                    "updated_at": row[3] or "",
-                    "message_count": 0,
-                })
-        return sessions
+        # P1-10：委派给 SessionRepository
+        from infrastructure.persistence.session_repository import SessionRepository
+        return SessionRepository.list_by_user(user_id)
 
     def delete_session(self, session_id: str, *, user_id: str) -> None:
         task = self._task_store.get(session_id, user_id=user_id)
         if task.user_id != user_id:
             return
-        from infrastructure.persistence.database import get_connection
-        conn = get_connection()
-        conn.execute("DELETE FROM session_turns WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM tasks WHERE session_id = ?", (session_id,))
-        conn.commit()
+        # P1-10：委派给 SessionRepository 级联删除
+        from infrastructure.persistence.session_repository import SessionRepository
+        SessionRepository.delete(session_id)
         self._session_store._sessions.pop(session_id, None)
         self._task_store._tasks.pop(session_id, None)

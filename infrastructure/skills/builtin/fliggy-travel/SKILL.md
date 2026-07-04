@@ -1,11 +1,3 @@
----
-name: openakita/skills@fliggy-travel
-description: "FlyAI travel search and booking skill powered by Fliggy MCP. Search flights, hotels, attractions, trains, concerts, and travel deals with natural language. Supports diverse travel scenarios including individual, group, business, family trips. No API key required for basic features."
-license: MIT
-metadata:
-  author: alibaba-flyai
-  version: "1.0.14"
----
 
 # FlyAI — 飞猪旅行搜索与预订
 

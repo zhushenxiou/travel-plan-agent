@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     api_key: str = ""
     base_url: str | None = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
+    # ===== LLM 备用 Provider（P1-15：FallbackLLM 降级链）=====
+    # 留空则不启用 fallback，仅使用主 provider。
+    # 配置后，主 provider 故障（限流/连接错误/服务不可用）时自动切换到备用。
+    fallback_api_key: str = ""
+    fallback_base_url: str | None = None
+    fallback_model: str = ""
+
     # ===== 数据目录 =====
     data_dir: Path = Field(default_factory=lambda: Settings._root() / "data")
     database_path: Path = Field(default_factory=lambda: Settings._root() / "data" / "claw.db")
@@ -35,6 +42,8 @@ class Settings(BaseSettings):
     # ===== 审计 =====
     audit_enabled: bool = True
     audit_log_dir: Path = Field(default_factory=lambda: Settings._root() / "data" / "audit")
+    # P2-3：审计日志保留天数，启动时自动清理超过保留期的 audit-YYYY-MM-DD.jsonl 文件
+    audit_retention_days: int = 30
 
     # ===== Agent 运行参数 =====
     max_iterations: int = 15

@@ -1,129 +1,9 @@
-"""Tests for core/memory.py — MemoryRecord, MemoryManager, DualLayerMemoryManager, SessionMemory"""
+"""Tests for domain/memory/manager.py — DualLayerMemoryManager, SessionMemory"""
 import pytest
 
-from domain.memory.manager import MemoryRecord, MemoryManager, DualLayerMemoryManager, ShortTermMemory, LongTermMemory, SessionMemory
+from domain.memory.manager import DualLayerMemoryManager, ShortTermMemory, LongTermMemory, SessionMemory
 from domain.user.session.manager import Session
 from infrastructure.persistence.database import init_db, reset_connection, _json_dumps
-
-
-class TestMemoryRecord:
-    def test_construction(self):
-        record = MemoryRecord(text="我喜欢Python", source="user", scope_id="u1")
-        assert record.text == "我喜欢Python"
-        assert record.source == "user"
-        assert record.scope_id == "u1"
-        assert record.created_at
-
-    def test_defaults(self):
-        record = MemoryRecord(text="some fact", source="conversation")
-        assert record.scope_id == "default"
-        assert record.created_at
-
-
-class TestMemoryManager:
-    @pytest.fixture(autouse=True)
-    def _setup_db(self, tmp_path, monkeypatch):
-        db_path = tmp_path / "test.db"
-        monkeypatch.setattr("config.settings.database_path", db_path)
-        reset_connection()
-        init_db(db_path)
-
-    def test_remember_and_search(self):
-        manager = MemoryManager()
-        manager.remember("我喜欢编程", source="user", scope_id="u1")
-        manager.remember("我的名字是小明", source="user", scope_id="u1")
-
-        results = manager.search("编程", scope_id="u1")
-        assert len(results) == 1
-        assert results[0].text == "我喜欢编程"
-
-    def test_search_no_match(self):
-        manager = MemoryManager()
-        manager.remember("我喜欢编程", source="user", scope_id="u1")
-
-        results = manager.search("天气", scope_id="u1")
-        assert len(results) == 0
-
-    def test_search_across_scopes(self):
-        manager = MemoryManager()
-        manager.remember("u1的爱好", source="user", scope_id="u1")
-        manager.remember("u2的爱好", source="user", scope_id="u2")
-
-        results = manager.search("爱好", scope_id="u1")
-        assert len(results) == 1
-        assert results[0].text == "u1的爱好"
-
-    def test_remember_skips_duplicate(self):
-        manager = MemoryManager()
-        manager.remember("相同的记忆", source="user", scope_id="u1")
-        manager.remember("相同的记忆", source="user", scope_id="u1")
-
-        results = manager.search("记忆", scope_id="u1")
-        assert len(results) == 1
-
-    def test_remember_skips_empty(self):
-        manager = MemoryManager()
-        manager.remember("", source="user", scope_id="u1")
-        manager.remember("   ", source="user", scope_id="u1")
-
-        results = manager.list_recent(scope_id="u1")
-        assert len(results) == 0
-
-    def test_build_context(self):
-        manager = MemoryManager()
-        manager.remember("我喜欢Python", source="user", scope_id="u1")
-        manager.remember("我喜欢编程", source="user", scope_id="u1")
-
-        context = manager.build_context("编程", scope_id="u1")
-        assert "我喜欢Python" in context or "我喜欢编程" in context
-
-    def test_build_context_empty(self):
-        manager = MemoryManager()
-        context = manager.build_context("anything", scope_id="empty_scope")
-        assert context == ""
-
-    def test_list_recent(self):
-        manager = MemoryManager()
-        for i in range(5):
-            manager.remember(f"记忆 {i}", source="user", scope_id="u1")
-
-        recent = manager.list_recent(limit=2, scope_id="u1")
-        assert len(recent) == 2
-        assert recent[0].text == "记忆 3"
-        assert recent[1].text == "记忆 4"
-
-    def test_maybe_learn_from_message_triggers(self):
-        manager = MemoryManager()
-
-        manager.maybe_learn_from_message("我叫小明", scope_id="u1")
-        manager.maybe_learn_from_message("我喜欢编程", scope_id="u1")
-        manager.maybe_learn_from_message("请记住密码是abc", scope_id="u1")
-        manager.maybe_learn_from_message("记住今天的会议", scope_id="u1")
-        manager.maybe_learn_from_message("my name is Alice", scope_id="u1")
-        manager.maybe_learn_from_message("i prefer dark mode", scope_id="u1")
-        manager.maybe_learn_from_message("i like coffee", scope_id="u1")
-        manager.maybe_learn_from_message("remember that deadline is Friday", scope_id="u1")
-
-        results = manager.list_recent(limit=10, scope_id="u1")
-        assert len(results) == 8
-
-    def test_maybe_learn_from_message_no_trigger(self):
-        manager = MemoryManager()
-
-        manager.maybe_learn_from_message("今天天气怎么样", scope_id="u1")
-        manager.maybe_learn_from_message("帮我查一下新闻", scope_id="u1")
-
-        results = manager.list_recent(scope_id="u1")
-        assert len(results) == 0
-
-    def test_persistence(self):
-        manager1 = MemoryManager()
-        manager1.remember("持久化记忆", source="user", scope_id="u1")
-
-        manager2 = MemoryManager()
-        results = manager2.search("持久化", scope_id="u1")
-        assert len(results) == 1
-        assert results[0].text == "持久化记忆"
 
 
 class TestDualLayerMemoryManager:
@@ -237,19 +117,6 @@ class TestDualLayerMemoryManager:
             "SELECT extraction_count FROM short_term_memories WHERE id = 1"
         ).fetchone()
         assert row["extraction_count"] == 1
-
-    def test_legacy_compat(self):
-        mgr = DualLayerMemoryManager()
-        mgr.remember("test memory", source="user", scope_id="u1")
-        results = mgr.search("test", scope_id="u1")
-        assert len(results) == 1
-        assert results[0].text == "test memory"
-
-    def test_build_context_delegates_to_legacy(self):
-        mgr = DualLayerMemoryManager()
-        mgr.remember("legacy test", source="user", scope_id="u1")
-        context = mgr.build_context("legacy", scope_id="u1")
-        assert "legacy test" in context
 
 
 class TestSessionMemory:

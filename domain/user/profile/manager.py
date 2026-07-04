@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -11,12 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 class ProfileManager:
+    # P2-1：缓存 TTL（秒），过期后下次 get 重新从 DB 加载
+    _CACHE_TTL = 300
+
     def __init__(self) -> None:
         self._cache: dict[str, UserProfile] = {}
+        self._cache_time: dict[str, float] = {}
 
     def get(self, user_id: str) -> UserProfile:
-        if user_id not in self._cache:
+        now = time.time()
+        cached_at = self._cache_time.get(user_id, 0.0)
+        if user_id not in self._cache or (now - cached_at) > self._CACHE_TTL:
             self._cache[user_id] = self._load(user_id) or UserProfile(user_id=user_id)
+            self._cache_time[user_id] = now
         return self._cache[user_id]
 
     def update(

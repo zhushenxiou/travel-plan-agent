@@ -1,4 +1,4 @@
-xu"""LLM Provider 降级链 — 多 provider 自动 fallback。
+"""LLM Provider 降级链 — 多 provider 自动 fallback。
 
 社区版实用性：用户可能在各种网络环境下用，API 偶尔不可用，降级能提升可用性。
 """
@@ -102,6 +102,27 @@ class FallbackLLM:
                 if i == len(self._providers) - 1:
                     raise
                 logger.warning("LLM provider #%d stream failed: %s, trying next...", i + 1, e)
+                continue
+        raise AllProvidersFailedError("所有 LLM provider 均不可用")
+
+    async def complete_json(self, *, system: str, user: str) -> dict[str, Any]:
+        """JSON completion，带降级。
+
+        P1-15：补齐该方法以覆盖 OpenAILLM 全部接口，
+        被 memory_extractor / memory_distiller / itinerary.parser 调用。
+        审计日志与 JSON 容错解析由各 provider.complete_json 自身处理，
+        此处只负责按 provider 顺序降级。
+        """
+        for i, provider in enumerate(self._providers):
+            try:
+                return await provider.complete_json(system=system, user=user)
+            except (RateLimitError, ServiceUnavailableError, ConnectionError, TimeoutError) as e:
+                logger.warning("LLM provider #%d failed (json): %s, trying next...", i + 1, e)
+                continue
+            except Exception as e:
+                if i == len(self._providers) - 1:
+                    raise
+                logger.warning("LLM provider #%d failed (json, unexpected): %s, trying next...", i + 1, e)
                 continue
         raise AllProvidersFailedError("所有 LLM provider 均不可用")
 

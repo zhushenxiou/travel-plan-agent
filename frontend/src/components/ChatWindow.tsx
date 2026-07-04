@@ -1,10 +1,12 @@
 import { useRef, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Message, ThinkingStep } from '../hooks/useChatStore'
 import { useSessionStore } from '../hooks/useSessionStore'
-import { User, AlertTriangle, MapPin, Sparkles, Eye, ThumbsUp, Map, Loader2, Check } from 'lucide-react'
+import { User, AlertTriangle, MapPin, Sparkles, ThumbsUp, Loader2, Check } from 'lucide-react'
 import { AgentActivationBanner } from './AgentActivationBanner'
 import { AgentActionCard } from './AgentActionCard'
+import { TrendingBar } from './TrendingBar'
+
+import type { AgentInfo } from '../utils/api'
 
 interface Props {
   messages: Message[]
@@ -12,6 +14,8 @@ interface Props {
   isEscalated: boolean
   thinkingSteps: ThinkingStep[]
   onQuickSend?: (text: string) => void
+  /** 当前激活的智能体信息（用于 WelcomeScreen 展示介绍） */
+  currentAgentInfo?: AgentInfo | null
 }
 
 function _renderContent(content: string, isUser: boolean) {
@@ -40,25 +44,14 @@ function _renderContent(content: string, isUser: boolean) {
   })
 }
 
-function _extractItineraryId(content: string): string | null {
-  const match = content.match(/itinerary_id["\s:]+["']?([a-f0-9]{16})/i)
-  if (match) return match[1]
-  const match2 = content.match(/行程概览已生成.*?id[：:]\s*([a-f0-9]{16})/i)
-  if (match2) return match2[1]
-  const match3 = content.match(/([a-f0-9]{16})/i)
-  if (match3 && content.includes('行程概览')) return match3[1]
-  return null
-}
-
 function _isItineraryConfirmPrompt(content: string): boolean {
   // 只要包含行程安排内容，就显示"满意，生成概览"按钮
   const hasItinerary = /第[1-9]天|第[一二三四五六七八九]天|Day\s*[1-9]|行程安排|每日行程/.test(content)
   return hasItinerary
 }
 
-export function ChatWindow({ messages, isLoading, isEscalated, thinkingSteps, onQuickSend }: Props) {
+export function ChatWindow({ messages, isLoading, isEscalated, thinkingSteps, onQuickSend, currentAgentInfo }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
-  const navigate = useNavigate()
   const activeAgent = useSessionStore((s) => s.activeAgent)
   const agentActions = useSessionStore((s) => s.agentActions)
 
@@ -66,13 +59,11 @@ export function ChatWindow({ messages, isLoading, isEscalated, thinkingSteps, on
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
 
-  const handleViewItinerary = (itineraryId: string) => {
-    navigate(`/agent/travel/itinerary/${itineraryId}`)
-  }
-
-  // 一旦已生成行程概览，禁用所有版本的"满意"按钮，防止重复生成
-  const hasConfirmedItinerary = messages.some(
-    (m) => m.role === 'assistant' && _extractItineraryId(m.content)
+  // 一旦已生成行程概览，禁用所有版本的"满意"按钮，防止重复生成。
+  // P1-13：改用结构化 agentActions 检测（navigate 类型且 path 含 /itinerary/），
+  // 不再从自由文本正则提取 itinerary_id。
+  const hasConfirmedItinerary = agentActions.some(
+    (a) => a.type === 'navigate' && typeof a.path === 'string' && a.path.includes('/itinerary/')
   )
 
   return (
@@ -126,21 +117,8 @@ export function ChatWindow({ messages, isLoading, isEscalated, thinkingSteps, on
                 </button>
               </div>
             )}
-            {msg.role === 'assistant' && !msg.isStreaming && _extractItineraryId(msg.content) && (
-              <button
-                onClick={() => handleViewItinerary(_extractItineraryId(msg.content)!)}
-                className="mt-3 flex items-center gap-3 px-5 py-3.5 bg-gradient-to-r from-sky-500 to-blue-600 text-white rounded-2xl text-sm font-medium hover:from-sky-600 hover:to-blue-700 transition-all shadow-lg shadow-sky-200/60 active:scale-[0.97] w-fit"
-              >
-                <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
-                  <Map size={20} className="text-white" />
-                </div>
-                <div className="text-left">
-                  <div className="font-semibold text-[15px]">查看行程概览</div>
-                  <div className="text-white/70 text-xs mt-0.5">点击查看完整行程卡片</div>
-                </div>
-                <Eye size={16} className="text-white/60 ml-2" />
-              </button>
-            )}
+            {/* P1-13：行程概览跳转按钮已移除，改由 agentActions 中的 navigate 类型
+                action 通过 AgentActionCard 渲染（结构化，避免正则误匹配）。 */}
           </div>
         </div>
       ))}
@@ -163,10 +141,12 @@ export function ChatWindow({ messages, isLoading, isEscalated, thinkingSteps, on
         </div>
       )}
 
-      {/* 智能体激活提示 — 显示在消息列表底部 */}
+      {/* 智能体激活提示 — 显示在消息列表底部。
+          P1-14：传入结构化的 currentAgentInfo（由父组件从 agentMap 查询），
+          支持任意 builtin / custom 智能体动态展示，不再硬编码 travel。 */}
       {activeAgent && (
         <div className="flex justify-center">
-          <AgentActivationBanner agent={activeAgent} />
+          <AgentActivationBanner agentInfo={currentAgentInfo} />
         </div>
       )}
 
@@ -199,47 +179,41 @@ function Avatar({ role }: { role: 'user' | 'assistant' }) {
   )
 }
 
-function WelcomeScreen({ onQuickSend }: { onQuickSend?: (text: string) => void }) {
+function WelcomeScreen({ onQuickSend, currentAgentInfo }: { onQuickSend?: (text: string) => void; currentAgentInfo?: AgentInfo | null }) {
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4">
-      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center mb-6 shadow-lg shadow-sky-200">
-        <Sparkles size={32} className="text-white" />
-      </div>
-      <h2
-        className="text-2xl font-bold text-slate-800 mb-2"
-        style={{ fontFamily: 'var(--font-display)' }}
-      >
-        Claw 智能助手
-      </h2>
-      <p className="text-slate-500 text-sm max-w-md mb-8">
-        我是你的通用 AI 助手，可以自由对话、回答问题。
-        也可以在 Agent 中心选择专业智能体来处理特定任务。
-      </p>
-
-      <div className="w-full max-w-md">
-        <div className="grid grid-cols-2 gap-3">
-          {[
-            '你好，你是谁？',
-            '帮我写一首关于春天的诗',
-            '解释一下什么是机器学习',
-            '给我讲个笑话',
-          ].map((text) => (
-            <QuickAction key={text} text={text} onClick={onQuickSend} />
-          ))}
+      {/* 当前智能体介绍 */}
+      <div className="mb-6">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-sky-200">
+          {currentAgentInfo?.icon ? (
+            <span className="text-2xl leading-none">{currentAgentInfo.icon}</span>
+          ) : (
+            <Sparkles size={28} className="text-white" />
+          )}
         </div>
+        <h2
+          className="text-xl font-bold text-slate-800 mb-1"
+          style={{ fontFamily: 'var(--font-display)' }}
+        >
+          {currentAgentInfo?.name ?? '云合 智能助手'}
+        </h2>
+        <p className="text-slate-500 text-sm max-w-md">
+          {currentAgentInfo?.welcome_message
+            ? currentAgentInfo.welcome_message
+            : currentAgentInfo?.description
+              ? currentAgentInfo.description
+              : '我是你的通用 AI 助手，可以自由对话、回答问题。也可以在 Agent 中心选择专业智能体来处理特定任务。'}
+        </p>
       </div>
-    </div>
-  )
-}
 
-function QuickAction({ text, onClick }: { text: string; onClick?: (text: string) => void }) {
-  return (
-    <button
-      onClick={() => onClick?.(text)}
-      className="text-left px-4 py-3 rounded-xl border border-slate-200 bg-white hover:border-sky-300 hover:bg-sky-50 transition-all text-sm text-slate-600 hover:text-sky-600"
-    >
-      {text}
-    </button>
+      {/* 热搜标签云 */}
+      <div className="w-full mb-8">
+        <TrendingBar onSelect={(text) => onQuickSend?.(text)} />
+      </div>
+
+      {/* 提示 */}
+      <p className="text-xs text-slate-300">输入任意问题开始对话</p>
+    </div>
   )
 }
 

@@ -91,14 +91,22 @@ class TravelAgent(BaseAgent):
         # 先发路由事件
         yield {"type": "route", "data": "travel"}
 
-        # 委托流式输出
+        # 委托流式输出，同时从 done event 中提取结构化 itinerary_id（P1-13）
         reply_text = ""
+        structured_itinerary_id: str | None = None
         async for event in self._agent.chat_stream(session_id=session_id, message=message, user_id=user_id):
             yield event
             if event.get("type") == "chunk":
                 reply_text += event.get("data", "")
+            elif event.get("type") == "done":
+                # done event 的 data 可能是 "completed" 字符串，
+                # 或 {"status": "completed", "itinerary_id": "xxx"} dict（P1-13 结构化）
+                data = event.get("data")
+                if isinstance(data, dict):
+                    structured_itinerary_id = data.get("itinerary_id") or None
 
-        # 流结束后发操作建议
-        actions = self._extract_actions(reply_text)
+        # 流结束后发操作建议：优先用结构化 itinerary_id，避免正则误匹配
+        structured_data = {"itinerary_id": structured_itinerary_id} if structured_itinerary_id else None
+        actions = self._extract_actions(reply_text, structured_data=structured_data)
         if actions:
             yield {"type": "actions", "data": actions}

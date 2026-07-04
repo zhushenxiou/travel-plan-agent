@@ -1,0 +1,14 @@
+{
+    "name": "citation_graph",
+    "description": "查询一篇论文的引用关系（谁引用了它，它引用了谁）。使用 Semantic Scholar 免费 API，无需 Key。有助于判断论文影响力、追踪研究脉络、发现核心参考文献。返回该论文的引用者和参考文献列表。",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "paper_id": {
+                "type": "string",
+                "description": "ArXiv 论文 ID，如 2401.12345 或 2305.12345v2"
+            }
+        },
+        "required": ["paper_id"]
+    }
+}

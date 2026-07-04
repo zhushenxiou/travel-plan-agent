@@ -32,7 +32,9 @@ class ToolPolicy:
     """
 
     def __init__(self) -> None:
-        # 简单内存频率计数器：key = f"{user_id}:{tool_name}" → list[timestamp]
+        # P2-11：简单内存频率计数器（key = f"{user_id}:{tool_name}" → list[timestamp]）。
+        # 限制：多进程部署时各进程独立计数，无法跨进程共享限额。
+        # 如需跨进程限流，可改为 Redis（参考 P1-9 限流中间件）。
         self._call_log: dict[str, list[float]] = {}
         self._max_calls_per_minute = 30   # 每工具每分钟上限
         self._max_calls_per_hour = 200    # 每工具每小时上限

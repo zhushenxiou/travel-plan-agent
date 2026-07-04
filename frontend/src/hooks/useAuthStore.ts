@@ -25,7 +25,7 @@ export const useAuthStore = create<AuthState>()(
       },
     }),
     {
-      name: 'claw-auth',
+      name: 'yunhe-auth',
       partialize: (state) => ({
         userId: state.userId,
         username: state.username,

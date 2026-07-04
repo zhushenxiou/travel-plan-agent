@@ -1,4 +1,4 @@
-ji"""Prompt 注入防御 — 用户消息进入 LLM 前的基础消毒层。
+"""Prompt 注入防御 — 用户消息进入 LLM 前的基础消毒层。
 
 社区版做基础防御（正则匹配），聊胜于无。不引入第三方 NLP 依赖。
 """
@@ -30,7 +30,8 @@ class PromptGuard:
             logger.warning("Prompt injection detected: %s", warnings)
     """
 
-    def sanitize(self, message: str) -> "tuple[str, list[str]]":
+    @staticmethod
+    def sanitize(message: str) -> "tuple[str, list[str]]":
         """返回消毒后的消息 + 触发的警告列表。
 
         注意：不直接拦截消息（可能误杀正常内容），而是标记警告供上层决策。
@@ -49,7 +50,8 @@ class PromptGuard:
 
         return cleaned, warnings
 
-    def is_suspicious(self, message: str) -> bool:
+    @staticmethod
+    def is_suspicious(message: str) -> bool:
         """快速判断是否可疑（用于日志标记，不拦截）。"""
-        _, warnings = self.sanitize(message)
+        _, warnings = PromptGuard.sanitize(message)
         return len(warnings) > 0

@@ -16,6 +16,7 @@ from infrastructure.mcp.runtime import MCPProxyRuntime
 from domain.user.session.manager import SessionManager
 from domain.shared.audit.logger import AuditLogger
 from domain.reasoning.engine import ReasoningEngine, AskUserNeeded, ConfirmationNeeded
+from domain.safety.prompt_guard import PromptGuard
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class DynamicAgent(BaseAgent):
         # 使用专属 ToolExecutor（绑定子集 registry + 全局 policy/audit）
         self._tool_executor = ToolExecutor(
             registry=self._agent_registry,
-            policy=tool_executor._policy,
+            policy=tool_executor.policy,
             audit_logger=audit_logger,
         )
 
@@ -155,6 +156,18 @@ class DynamicAgent(BaseAgent):
         trace_id: str = "",
         **kwargs,
     ) -> dict:
+        # ===== 输入消毒：Prompt 注入防御 =====
+        cleaned, warnings = PromptGuard.sanitize(message)
+        if warnings:
+            logger.warning("Prompt injection detected: %s", warnings)
+            if self._audit_logger:
+                self._audit_logger.log_api_boundary(
+                    session_id=session_id, user_id=user_id or "", trace_id=trace_id,
+                    direction="request", endpoint="dynamic_agent.chat", method="INTERNAL",
+                    payload=f"prompt_injection_blocked: {warnings}", agent_id=self._config.id,
+                )
+        message = cleaned
+
         memory_scope = str(user_id or session_id)
         trace_id = trace_id or uuid.uuid4().hex[:16]
 
@@ -163,6 +176,9 @@ class DynamicAgent(BaseAgent):
 
         # 加载会话历史
         session = self._session_store.get(session_id)
+        # 写入 user_id 到 session（首次创建时绑定，后续保持不变）
+        if user_id and not session.user_id:
+            session.user_id = memory_scope
         session.append("user", message)
 
         system_prompt = self._build_system_prompt()
@@ -187,7 +203,7 @@ class DynamicAgent(BaseAgent):
 
         # 保存会话
         session.append("assistant", reply)
-        self._session_store.save(session)
+        self._session_store.save(session, user_id=memory_scope)
 
         return {
             "status": status,
@@ -205,6 +221,18 @@ class DynamicAgent(BaseAgent):
         trace_id: str = "",
         **kwargs,
     ) -> AsyncGenerator[dict, None]:
+        # ===== 输入消毒：Prompt 注入防御 =====
+        cleaned, warnings = PromptGuard.sanitize(message)
+        if warnings:
+            logger.warning("Prompt injection detected: %s", warnings)
+            if self._audit_logger:
+                self._audit_logger.log_api_boundary(
+                    session_id=session_id, user_id=user_id or "", trace_id=trace_id,
+                    direction="request", endpoint="dynamic_agent.chat_stream", method="INTERNAL",
+                    payload=f"prompt_injection_blocked: {warnings}", agent_id=self._config.id,
+                )
+        message = cleaned
+
         memory_scope = str(user_id or session_id)
         trace_id = trace_id or uuid.uuid4().hex[:16]
 
@@ -213,6 +241,9 @@ class DynamicAgent(BaseAgent):
 
         # 加载会话历史
         session = self._session_store.get(session_id)
+        # 写入 user_id 到 session（首次创建时绑定，后续保持不变）
+        if user_id and not session.user_id:
+            session.user_id = memory_scope
         session.append("user", message)
 
         # 发送路由事件
@@ -248,8 +279,8 @@ class DynamicAgent(BaseAgent):
             full_reply = f"抱歉，处理您的请求时出现了错误：{e}"
             yield {"type": "chunk", "data": full_reply}
 
-        # 保存会话
+        # 保存会话（P0-4：session.user_id 已绑定，save 会写入 sessions.user_id 列）
         session.append("assistant", full_reply)
-        self._session_store.save(session)
+        self._session_store.save(session, user_id=memory_scope)
 
         yield {"type": "done", "data": status}

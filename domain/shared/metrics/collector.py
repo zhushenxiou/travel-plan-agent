@@ -34,10 +34,7 @@ def _init_metrics():
             "Total tool executions",
             ["tool_name", "status"],
         )
-        _collectors["active_sessions"] = Gauge(
-            "claw_active_sessions",
-            "Number of active sessions",
-        )
+        # P2-4：移除 dead metric `active_sessions` Gauge（定义后从未 inc/dec）。
         _collectors["emotion_detected"] = Counter(
             "claw_emotion_detected_total",
             "Emotion detection results",

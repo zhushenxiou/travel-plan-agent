@@ -11,7 +11,7 @@
 
 1. **先读设计文档**：`UNIVERSAL_AGENT_DESIGN.md` 是架构与决策依据，本文档是它的工程落地。两份文档冲突时，以本文档的"现状核查"为准（设计文档的部分代码示例为示意，真实路径以本文档为准）。
 2. **关键修正（务必注意）**：
-   - 设计文档 4.2 节提到"参考 `travel_core.py` 的 `_run_loop`"——**实际不存在 `_run_loop` 方法**。真实的 ReAct 主循环在 [`domain/reasoning/engine.py`](../domain/reasoning/engine.py) 的 `ReasoningEngine.run()` / `run_stream()`（第 269 / 572 行）。DynamicAgent 重构应复用 `ReasoningEngine`，而非 travel_core。
+   - 设计文档 4.2 节提到"参考 `domain/travel/core.py` 的 `_run_loop`"——**实际不存在 `_run_loop` 方法**。真实的 ReAct 主循环在 [`domain/reasoning/engine.py`](../domain/reasoning/engine.py) 的 `ReasoningEngine.run()` / `run_stream()`（第 269 / 572 行）。DynamicAgent 重构应复用 `ReasoningEngine`，而非 domain/travel/core.py。
    - 设计文档 2.1 节（第 38 行）已修订：云合的 tool_calling **分阶段过渡**，初期保留 prompt 路由兜底，不一次性全量替换。Phase 3 按此执行。
    - 云合的 `system_prompt` / `description` **不得写死任何具体领域**（如"旅行规划""地图导航""航班查询"），可用智能体列表在运行时通过 `{agent_list}` 动态注入。新增智能体时云合配置零改动。
 3. **每个任务都标注了依赖**，请按依赖顺序推进。同 Phase 内无依赖任务可并行。
@@ -29,7 +29,7 @@
 | 总调度 | `domain/agent/orchestrator.py` | `_route()` 用 prompt 让 LLM 返回 agent_id（单跳），无 function calling、无委派上下文 |
 | 自定义智能体仓储 | `domain/agent/repository.py` | `custom_agents` 表无 `mcp_servers` 列；`_ALLOWED_FIELDS`（第 22-25 行）不含 `mcp_servers` |
 | 推理引擎 | `domain/reasoning/engine.py` | `ReasoningEngine` 已有 `_build_tools_schema()`(167)、`run()`(269)、`run_stream()`(572)，用 `complete_with_tools`，`max_iterations` 来自 `settings` |
-| 旅游 Agent 主循环 | `domain/agent/travel_core.py` | `Agent` 类(49) 注入 session_store/tool_registry/tool_executor，内部委托 `ReasoningEngine` |
+| 旅游 Agent 主循环 | `domain/travel/core.py` | `Agent` 类(49) 注入 session_store/tool_registry/tool_executor，内部委托 `ReasoningEngine` |
 | 工具规格 | `infrastructure/tools/base.py` | `ToolSpec` 仅 `name/description/category/parameters`，**无渐进披露字段** |
 | 工具策略 | `infrastructure/tools/policy.py` | `ToolPolicy.check(tool_name, arguments)` 仅硬编码 `run_shell`/`write_file` 规则，无 confirm_required 联动、无频率/权限 |
 | Skill 提供者 | `infrastructure/skills/provider.py` | `FileSkillProvider._parse_skill()` 解析 SKILL.md frontmatter + openai.yaml `interface`，**不解析 `tools`/`category`** |
@@ -142,13 +142,13 @@
 - **改动**：
   1. 构造函数增加依赖：`tool_registry: ToolRegistry`、`tool_executor: ToolExecutor`、`session_store: SessionManager`、`mcp_runtime: MCPProxyRuntime`、`audit_logger: AuditLogger`。
   2. 新增 `_resolve_tools(config)`：遍历 `config.skills`→`skill_provider.get_skill(name).tools`；遍历 `config.mcp_servers`→`mcp_runtime.catalog.list_tool_refs()` 中 `server_identifier` 匹配项的 `proxy_name`。返回去重后的工具名列表。
-  3. `chat()` / `chat_stream()`：**会话管理在 DynamicAgent 层做**（参考 `travel_core.Agent`：调用 engine 前从 `session_store` 加载历史，调用后保存）。`ReasoningEngine` 构造签名为 `(llm, tool_registry, tool_executor, audit_logger)`——**不接收 session_store**，它只负责单轮推理 + 工具循环。`audit_logger` 记录由 engine 内部完成。
+  3. `chat()` / `chat_stream()`：**会话管理在 DynamicAgent 层做**（参考 `domain/travel/core.py:Agent`：调用 engine 前从 `session_store` 加载历史，调用后保存）。`ReasoningEngine` 构造签名为 `(llm, tool_registry, tool_executor, audit_logger)`——**不接收 session_store**，它只负责单轮推理 + 工具循环。`audit_logger` 记录由 engine 内部完成。
   4. **工具子集方案（关键）**：`ReasoningEngine._build_tools_schema()` 当前遍历 `tool_registry._tools` 全量构建（engine.py 第 167-172 行）。DynamicAgent 需要工具子集，有两种方案：
      - **方案 A（推荐，独立于 1.10）**：DynamicAgent 新建一个 `ToolRegistry` 实例，从全局 registry 中按 `_resolve_tools()` 结果只注册子集工具，传给 `ReasoningEngine`。
      - 方案 B：依赖任务 1.10 的 `disclosed_tools` 子集改造。
      建议采用方案 A，使 1.7 与 1.10 解耦可并行。
   5. **复用 `ReasoningEngine`，不要自己写 ReAct 循环**。
-- **关键参考**：`travel_core.py` 的 `Agent` 类如何组装 `ReasoningEngine` + `ToolExecutor` + `SessionManager`（第 50-110 行）——DynamicAgent 应复刻这套组装模式，区别只在工具来源（Agent 按意图筛选，DynamicAgent 按 config.skills/mcp_servers 筛选）。
+- **关键参考**：`domain/travel/core.py` 的 `Agent` 类如何组装 `ReasoningEngine` + `ToolExecutor` + `SessionManager`（第 50-110 行）——DynamicAgent 应复刻这套组装模式，区别只在工具来源（Agent 按意图筛选，DynamicAgent 按 config.skills/mcp_servers 筛选）。
 - **验收**：
   - 创建勾选 fliggy skill 的自定义智能体，对话"查北京到上海机票"能真实调用 `fliggy_search_flights` 并返回结果。
   - 连续两轮对话保留上下文（第二轮"换个日期"能命中第一轮信息）。
@@ -292,7 +292,7 @@
 
 - **文件**：`domain/agent/base.py`（修改）
 - **改动**：`chat()` 返回 dict 约定增加 `status: "final_answer" | "need_input" | "cannot_handle"`（默认 `final_answer`，保证向后兼容）；`need_input` 时带 `missing_info: list[str]`。
-- **注意**：现有 `TravelAgent.chat()` 返回 `{"status": "completed", ...}`（见 travel_core.py 第 115/185/227 行）。需在 TravelAgent 适配层把 `"completed"` 映射为 `"final_answer"`，或让云合兼容 `"completed"`。
+- **注意**：现有 `TravelAgent.chat()` 返回 `{"status": "completed", ...}`（见 domain/travel/core.py 第 115/185/227 行）。需在 TravelAgent 适配层把 `"completed"` 映射为 `"final_answer"`，或让云合兼容 `"completed"`。
 - **验收**：云合能根据子智能体 `status` 决定保持/释放委派。
 
 ### 任务 3.4 — 委派上下文状态机

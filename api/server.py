@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _api_audit = AuditLogger()
 
 _BACKGROUND_TASK: asyncio.Task | None = None
+_MEMORY_TASK: asyncio.Task | None = None
 _POOL_REFRESH_INTERVAL = 1800
 
 
@@ -43,9 +44,15 @@ async def _periodic_refresh_pool() -> None:
             logger.error("Periodic trending pool refresh error: %s", e)
 
 
+async def _periodic_memory_maintenance() -> None:
+    """P1-3：记忆维护后台任务（蒸馏 + 衰减）。"""
+    from application.scheduler import run_memory_maintenance
+    await run_memory_maintenance()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _BACKGROUND_TASK
+    global _BACKGROUND_TASK, _MEMORY_TASK
     logger.info("Server starting: warming up trending pool")
     try:
         count = await refresh_pool()
@@ -53,6 +60,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Trending pool warmup failed: %s", e)
     _BACKGROUND_TASK = asyncio.create_task(_periodic_refresh_pool())
+    # P1-3：启动记忆维护后台任务（蒸馏 + 衰减，每小时一次）
+    _MEMORY_TASK = asyncio.create_task(_periodic_memory_maintenance())
     yield
     if _BACKGROUND_TASK:
         _BACKGROUND_TASK.cancel()
@@ -60,9 +69,18 @@ async def lifespan(app: FastAPI):
             await _BACKGROUND_TASK
         except asyncio.CancelledError:
             pass
+    if _MEMORY_TASK:
+        _MEMORY_TASK.cancel()
+        try:
+            await _MEMORY_TASK
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Claw API", lifespan=lifespan)
+# P2-18：时序耦合说明 — build_orchestrator() 在模块加载时同步执行，
+# 若失败则 server 无法启动。理想做法是移入 lifespan 并用 request.app.state 取用，
+# 但当前 agent/user_store 为模块级变量被多个路由直接引用，重构风险较高，暂保留。
 _container = build_orchestrator()
 agent = _container.orchestrator
 app.state.skill_provider = _container.skill_provider
@@ -73,11 +91,16 @@ app.state.mcp_catalog = _container.mcp_catalog
 user_store = UserStore()
 
 _PUBLIC_PATHS = {"/api/auth/register", "/api/auth/login", "/api/trending", "/health", "/metrics", "/api/shared"}
+# P0-6：/api/album/ 跳过全局 auth_middleware（<img> 标签无法携带 Authorization header），
+# 端点内部自行校验 query token。其它端点一律拒绝 query token，仅接受 Authorization header。
+_PUBLIC_PREFIXES = ("/api/album/",)
 
-# Phase 5: 轻量全局限流（SQLite 计数器，按 user_id + IP）
+# Phase 5: 轻量全局限流（进程内字典计数器，按 user_id + IP）。
+# 注意：本限流为单进程实现，多 worker 部署（如 gunicorn -w 4）下各进程独立计数，
+# 实际阈值会放大 N 倍；分布式场景应改用 Redis（参考 P1-9 方案 B）。
 _rate_counters: dict[str, dict[str, float]] = {}  # key -> {"count": N, "window_start": timestamp}
 _RATE_WINDOW = 60       # 时间窗口（秒）
-_RATE_MAX_REQUESTS = 60  # 每窗口最大请求数
+_RATE_MAX_REQUESTS = settings.rate_limit_rpm  # 每窗口最大请求数（读 settings，默认 60）
 _RATE_CLEANUP_INTERVAL = 300  # 清理间隔（秒）
 _last_rate_cleanup = 0.0
 
@@ -121,12 +144,14 @@ async def auth_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
     path = request.url.path
+    # P0-6：/api/album/ 走端点内部校验（<img> 标签限制），其它公共路径直接放行
     if path.startswith("/debug") or path in _PUBLIC_PATHS or path.startswith("/api/auth") or path.startswith("/api/shared"):
         return await call_next(request)
+    if any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES):
+        return await call_next(request)
+    # P0-6：仅接受 Authorization header，不再从 query 参数取 token（避免泄露到 access log/浏览器历史）
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
-    if not token:
-        token = request.query_params.get("token", "")
     if token:
         user_id = verify_token(token)
         if user_id:
@@ -542,6 +567,9 @@ async def create_session(request: Request) -> dict:
     if not user_id:
         return JSONResponse(status_code=401, content={"detail": "未登录"})
     session_id = os.urandom(8).hex()
+    # P1-10：通过 SessionRepository 持久化会话（同时写 sessions + tasks 行）
+    from infrastructure.persistence.session_repository import SessionRepository
+    SessionRepository.create(session_id, user_id)
     return {"session_id": session_id, "user_id": user_id}
 
 
@@ -644,26 +672,6 @@ async def session_snapshot(session_id: str, user_id: str | None = None) -> dict:
     return {"session": agent.snapshot_session(session_id), "task": agent.snapshot_task(session_id, user_id=user_id)}
 
 
-@app.get("/debug/memory")
-async def memory_snapshot(
-    query: str = "",
-    limit: int = 10,
-    session_id: str = "default",
-    user_id: str | None = None,
-) -> dict:
-    effective_user_id = user_id or session_id
-    logger.debug(
-        "API /debug/memory request: query=%s limit=%s session_id=%s user_id=%s",
-        query,
-        limit,
-        session_id,
-        effective_user_id,
-    )
-    if query.strip():
-        return {"items": agent.search_memory(query, limit=limit, user_id=effective_user_id)}
-    return {"items": agent.list_recent_memory(limit=limit, user_id=effective_user_id)}
-
-
 @app.get("/debug/mcp")
 async def mcp_snapshot() -> dict:
     logger.debug("API /debug/mcp request")
@@ -707,6 +715,82 @@ async def metrics():
 async def trending(refresh: bool = False) -> dict:
     items = await get_trending_travel(refresh=refresh)
     return {"items": items}
+
+
+# ===== 新闻热搜收藏 =====
+
+class NewsFavoriteRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    summary: str = Field("", max_length=500)
+    content: str = Field("", max_length=5000)
+    url: str = Field("", max_length=1000)
+    source: str = Field("", max_length=32)
+    tag: str = Field("", max_length=32)
+
+
+@app.get("/api/news/favorites")
+async def list_news_favorites(request: Request) -> dict:
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        return JSONResponse(status_code=401, content={"detail": "未登录"})
+    from infrastructure.persistence.database import get_connection
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, title, summary, content, url, source, tag, created_at "
+        "FROM news_favorites WHERE user_id = ? ORDER BY id DESC",
+        (user_id,),
+    ).fetchall()
+    favorites = [{
+        "id": r["id"], "title": r["title"], "summary": r["summary"],
+        "content": r["content"], "url": r["url"], "source": r["source"], "tag": r["tag"],
+        "created_at": r["created_at"],
+    } for r in rows]
+    return {"favorites": favorites}
+
+
+@app.post("/api/news/favorites")
+async def add_news_favorite(req: NewsFavoriteRequest, request: Request) -> dict:
+    """收藏一条新闻，同时写入 short_term_memories 让智能体能检索到。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        return JSONResponse(status_code=401, content={"detail": "未登录"})
+    from infrastructure.persistence.database import get_connection
+    from datetime import datetime
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO news_favorites (user_id, title, summary, content, url, source, tag, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, req.title, req.summary, req.content, req.url, req.source, req.tag, now),
+        )
+        # 同步写入 short_term_memories，让 agent 在对话中能引用用户关注的新闻
+        memory_content = f"用户收藏的新闻：{req.title}。{req.content or req.summary}"
+        conn.execute(
+            "INSERT INTO short_term_memories (user_id, category, content, experience_tag, created_at) "
+            "VALUES (?, 'news', ?, ?, ?)",
+            (user_id, memory_content, req.tag or "news"),
+        )
+        conn.commit()
+    except Exception as e:
+        # UNIQUE 约束冲突 = 已收藏，幂等返回成功
+        if "UNIQUE" in str(e) or "unique" in str(e):
+            return {"status": "already_favorited", "title": req.title}
+        logger.error("Add news favorite failed: %s", e)
+        return JSONResponse(status_code=500, content={"detail": "收藏失败"})
+    return {"status": "ok", "title": req.title}
+
+
+@app.delete("/api/news/favorites/{favorite_id}")
+async def delete_news_favorite(favorite_id: int, request: Request) -> dict:
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        return JSONResponse(status_code=401, content={"detail": "未登录"})
+    from infrastructure.persistence.database import get_connection
+    conn = get_connection()
+    conn.execute("DELETE FROM news_favorites WHERE id = ? AND user_id = ?", (favorite_id, user_id))
+    conn.commit()
+    return {"detail": "已取消收藏"}
 
 
 from domain.travel.itinerary.repository import ItineraryRepository
@@ -1320,7 +1404,8 @@ async def generate_travelogue(itinerary_id: str, request: Request):
 
 @app.get("/api/album/{file_path:path}")
 async def serve_album_image(file_path: str, request: Request):
-    # <img> 标签无法携带 Authorization header，支持 query param token
+    # P0-6：<img> 标签无法携带 Authorization header，本端点在 _PUBLIC_PREFIXES 中跳过全局中间件，
+    # 此处自行校验 query token。建议未来引入一次性 token 或短时效 token（见 FIX_DEV_GUIDE P0-6）。
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
         token = request.query_params.get("token", "")

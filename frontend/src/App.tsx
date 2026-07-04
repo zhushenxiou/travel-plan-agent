@@ -10,8 +10,10 @@ import { AgentCenter } from './pages/AgentCenter'
 import { AgentEditor } from './pages/AgentEditor'
 import { SkillCenter } from './pages/SkillCenter'
 import { MCPCenter } from './pages/MCPCenter'
+import { FavoritesPage } from './pages/FavoritesPage'
 import { useAuthStore } from './hooks/useAuthStore'
 import { AgentRouteGuard } from './components/AgentRouteGuard'
+import { AppLayout } from './components/AppLayout'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -46,7 +48,9 @@ function App() {
           path="/agents"
           element={
             <PrivateRoute>
-              <AgentCenter />
+              <AppLayout>
+                <AgentCenter />
+              </AppLayout>
             </PrivateRoute>
           }
         />
@@ -56,7 +60,9 @@ function App() {
           path="/agents/create"
           element={
             <PrivateRoute>
-              <AgentEditor />
+              <AppLayout>
+                <AgentEditor />
+              </AppLayout>
             </PrivateRoute>
           }
         />
@@ -64,7 +70,19 @@ function App() {
           path="/agents/edit/:agentId"
           element={
             <PrivateRoute>
-              <AgentEditor />
+              <AppLayout>
+                <AgentEditor />
+              </AppLayout>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/agents/view/:agentId"
+          element={
+            <PrivateRoute>
+              <AppLayout>
+                <AgentEditor />
+              </AppLayout>
             </PrivateRoute>
           }
         />
@@ -74,7 +92,19 @@ function App() {
           path="/memories"
           element={
             <PrivateRoute>
-              <MemoryPage />
+              <AppLayout>
+                <MemoryPage />
+              </AppLayout>
+            </PrivateRoute>
+          }
+        />
+
+        {/* 我的收藏 */}
+        <Route
+          path="/favorites"
+          element={
+            <PrivateRoute>
+              <FavoritesPage />
             </PrivateRoute>
           }
         />
@@ -84,7 +114,9 @@ function App() {
           path="/skills"
           element={
             <PrivateRoute>
-              <SkillCenter />
+              <AppLayout>
+                <SkillCenter />
+              </AppLayout>
             </PrivateRoute>
           }
         />
@@ -94,7 +126,9 @@ function App() {
           path="/mcps"
           element={
             <PrivateRoute>
-              <MCPCenter />
+              <AppLayout>
+                <MCPCenter />
+              </AppLayout>
             </PrivateRoute>
           }
         />
@@ -105,7 +139,9 @@ function App() {
           element={
             <PrivateRoute>
               <AgentRouteGuard agent="travel">
-                <ItineraryOverview />
+                <AppLayout>
+                  <ItineraryOverview />
+                </AppLayout>
               </AgentRouteGuard>
             </PrivateRoute>
           }
@@ -115,7 +151,9 @@ function App() {
           element={
             <PrivateRoute>
               <AgentRouteGuard agent="travel">
-                <AlbumPage />
+                <AppLayout>
+                  <AlbumPage />
+                </AppLayout>
               </AgentRouteGuard>
             </PrivateRoute>
           }
@@ -125,7 +163,9 @@ function App() {
           element={
             <PrivateRoute>
               <AgentRouteGuard agent="travel">
-                <ComparePage />
+                <AppLayout>
+                  <ComparePage />
+                </AppLayout>
               </AgentRouteGuard>
             </PrivateRoute>
           }

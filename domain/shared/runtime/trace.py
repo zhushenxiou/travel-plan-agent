@@ -38,11 +38,23 @@ class RunTrace:
 
 
 class TraceStore:
+    # P2-5：每个 session 保留最近 N 条 trace（原来只存最新一条）
+    _MAX_TRACES_PER_SESSION = 10
+
     def __init__(self) -> None:
-        self._latest_by_session: dict[str, RunTrace] = {}
+        self._traces_by_session: dict[str, list[RunTrace]] = {}
 
     def put(self, trace: RunTrace) -> None:
-        self._latest_by_session[trace.session_id] = trace
+        buf = self._traces_by_session.setdefault(trace.session_id, [])
+        buf.append(trace)
+        if len(buf) > self._MAX_TRACES_PER_SESSION:
+            # 保留尾部 N 条
+            del buf[: len(buf) - self._MAX_TRACES_PER_SESSION]
 
     def latest(self, session_id: str) -> RunTrace | None:
-        return self._latest_by_session.get(session_id)
+        buf = self._traces_by_session.get(session_id)
+        return buf[-1] if buf else None
+
+    def history(self, session_id: str) -> list[RunTrace]:
+        """P2-5：返回指定 session 的 trace 历史（最近 N 条）。"""
+        return list(self._traces_by_session.get(session_id, []))

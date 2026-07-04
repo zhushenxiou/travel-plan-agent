@@ -39,6 +39,7 @@ class Session:
     delegation_agent_id: str | None = None
     delegation_started_at: float | None = None
     delegation_last_interaction: float | None = None
+    user_id: str = ""
 
     def append(self, role: str, content: str) -> None:
         self.turns.append(Turn(role=role, content=content))
@@ -68,34 +69,53 @@ class SessionManager:
             self._sessions[session_id] = self._load(session_id) or Session(session_id=session_id)
         return self._sessions[session_id]
 
-    def save(self, session: Session) -> None:
+    def save(self, session: Session, user_id: str = "") -> None:
         conn = get_connection()
         now = datetime.utcnow().isoformat()
         session.updated_at = now
+        # 若显式传入 user_id 则覆盖 session.user_id（便于调用方在创建会话时即指定归属）
+        if user_id:
+            session.user_id = user_id
         conn.execute(
-            "INSERT INTO sessions (session_id, summary, created_at, updated_at, "
+            "INSERT INTO sessions (session_id, user_id, summary, created_at, updated_at, "
             "disclosed_tools, delegation_agent_id, delegation_started_at, delegation_last_interaction) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(session_id) DO UPDATE SET "
+            "user_id=excluded.user_id, "
             "summary=excluded.summary, updated_at=excluded.updated_at, "
             "disclosed_tools=excluded.disclosed_tools, "
             "delegation_agent_id=excluded.delegation_agent_id, "
             "delegation_started_at=excluded.delegation_started_at, "
             "delegation_last_interaction=excluded.delegation_last_interaction",
             (
-                session.session_id, session.summary, session.created_at, session.updated_at,
+                session.session_id, session.user_id, session.summary, session.created_at, session.updated_at,
                 json_dumps(session.disclosed_tools),
                 session.delegation_agent_id,
                 session.delegation_started_at,
                 session.delegation_last_interaction,
             ),
         )
-        conn.execute("DELETE FROM session_turns WHERE session_id = ?", (session.session_id,))
-        for turn in session.turns:
-            conn.execute(
-                "INSERT INTO session_turns (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session.session_id, turn.role, turn.content, turn.created_at),
-            )
+
+        # P1-5：增量插入新 turns（替代全量 DELETE + INSERT）
+        # _last_persisted_turn 由 _load() 在加载时设置，新会话默认 0
+        last_persisted = getattr(session, "_last_persisted_turn", 0)
+        # 安全检查：若内存中 turns 比已持久化的少（被截断），回退到全量重写
+        if last_persisted > len(session.turns):
+            conn.execute("DELETE FROM session_turns WHERE session_id = ?", (session.session_id,))
+            for turn in session.turns:
+                conn.execute(
+                    "INSERT INTO session_turns (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                    (session.session_id, turn.role, turn.content, turn.created_at),
+                )
+        else:
+            # 仅插入尚未持久化的 turns
+            for turn in session.turns[last_persisted:]:
+                conn.execute(
+                    "INSERT INTO session_turns (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                    (session.session_id, turn.role, turn.content, turn.created_at),
+                )
+        session._last_persisted_turn = len(session.turns)
+
         conn.commit()
         if self._redis_store:
             self._redis_store.save(session)
@@ -181,10 +201,15 @@ class SessionManager:
             turns.append(Turn(role=tr["role"], content=tr["content"], created_at=tr["created_at"]))
 
         # 读取 optional 列（try/except 兼容旧数据库无这些列）
+        user_id: str = ""
         disclosed_tools: list[str] = []
         delegation_agent_id: str | None = None
         delegation_started_at: float | None = None
         delegation_last_interaction: float | None = None
+        try:
+            user_id = row["user_id"] if "user_id" in row.keys() else ""
+        except (KeyError, IndexError):
+            pass
         try:
             dt_val = row["disclosed_tools"] if "disclosed_tools" in row.keys() else None
             disclosed_tools = _json_loads_list(dt_val)
@@ -203,7 +228,7 @@ class SessionManager:
         except (KeyError, IndexError):
             pass
 
-        return Session(
+        session = Session(
             session_id=row["session_id"],
             turns=turns,
             summary=row["summary"],
@@ -213,7 +238,11 @@ class SessionManager:
             delegation_agent_id=delegation_agent_id,
             delegation_started_at=delegation_started_at,
             delegation_last_interaction=delegation_last_interaction,
+            user_id=user_id,
         )
+        # P1-5：标记已持久化的 turn 数，避免 save() 时重复插入
+        session._last_persisted_turn = len(turns)
+        return session
 
 
 SessionStore = SessionManager
