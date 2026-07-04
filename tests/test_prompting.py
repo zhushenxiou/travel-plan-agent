@@ -1,8 +1,8 @@
-"""Tests for core/prompting.py — PromptBuilder"""
-from core.prompting import PromptBuilder
-from core.prompt_context import PromptContext
-from core.contxt_manager import PreparedContext
-from core.types import IntentResult, IntentType
+"""Tests for domain/travel/prompting.py — PromptBuilder"""
+from domain.travel.prompting import PromptBuilder
+from domain.travel.prompt_context import PromptContext
+from domain.travel.context_manager import PreparedContext
+from domain.shared.types import IntentResult, IntentType
 
 
 class TestPromptBuilder:

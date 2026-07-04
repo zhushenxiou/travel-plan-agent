@@ -1,0 +1,18 @@
+{
+  "name": "create_doc",
+  "description": "创建腾讯文档",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "文档标题"
+      },
+      "content": {
+        "type": "string",
+        "description": "文档内容"
+      }
+    },
+    "required": ["title"]
+  }
+}

@@ -1,13 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ChatWindow } from '../components/ChatWindow'
 import { ChatInput } from '../components/ChatInput'
 import { SessionSidebar } from '../components/SessionSidebar'
+import { NavSidebar } from '../components/NavSidebar'
 import { useChatStore } from '../hooks/useChatStore'
 import { useAuthStore } from '../hooks/useAuthStore'
-import { sendMessageStream, createSession, listSessions, getSessionMessages } from '../utils/api'
-import { MapPin } from 'lucide-react'
+import { useSessionStore } from '../hooks/useSessionStore'
+import { sendMessageStream, createSession, listSessions, getSessionMessages, fetchAgents, type AgentInfo } from '../utils/api'
+import { Sparkles } from 'lucide-react'
 
 export function Home() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const setActiveAgent = useSessionStore((s) => s.setActiveAgent)
+  const setAgentActions = useSessionStore((s) => s.setAgentActions)
+  const clearAgentActions = useSessionStore((s) => s.clearAgentActions)
   const {
     messages,
     isLoading,
@@ -29,6 +36,9 @@ export function Home() {
 
   const authUserId = useAuthStore((s) => s.userId)
   const [activeSessionId, setActiveSessionId] = useState(sessionId)
+  const [agentMap, setAgentMap] = useState<Record<string, AgentInfo>>({})
+  const activeAgent = useSessionStore((s) => s.activeAgent)
+  const [sessionListRefresh, setSessionListRefresh] = useState(0)
   const abortRef = useRef<AbortController | null>(null)
   const thinkingClearedRef = useRef(false)
 
@@ -37,6 +47,32 @@ export function Home() {
       setUserId(authUserId)
     }
   }, [authUserId, userId, setUserId])
+
+  // 加载智能体列表，用于 header 动态显示当前激活智能体的名称/图标
+  useEffect(() => {
+    fetchAgents()
+      .then((data) => {
+        const map: Record<string, AgentInfo> = {}
+        for (const a of [...data.builtin, ...data.custom, ...data.public]) {
+          map[a.id] = a
+        }
+        setAgentMap(map)
+      })
+      .catch(() => {
+        // 加载失败时 header 退回通用标题
+      })
+  }, [])
+
+  // 读取 URL 中的 agent 参数，激活对应智能体（来自 Agent 中心"使用"按钮）
+  useEffect(() => {
+    const agentFromUrl = searchParams.get('agent')
+    if (agentFromUrl) {
+      setActiveAgent(agentFromUrl)
+      // 用完即清，避免刷新后仍锁定
+      searchParams.delete('agent')
+      setSearchParams(searchParams, { replace: true })
+    }
+  }, [searchParams, setActiveAgent, setSearchParams])
 
   useEffect(() => {
     if (!sessionId) {
@@ -104,6 +140,8 @@ export function Home() {
     setLoading(true)
     clearThinkingSteps()
     thinkingClearedRef.current = false
+    // 清空上一轮的操作卡片
+    clearAgentActions()
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -111,11 +149,13 @@ export function Home() {
     try {
       const currentSessionId = useChatStore.getState().sessionId
       const currentUserId = useChatStore.getState().userId
+      const currentAgentId = useSessionStore.getState().activeAgent
       const stream = sendMessageStream(
         {
           session_id: currentSessionId,
           user_id: currentUserId,
           message: text,
+          agent_id: currentAgentId ?? undefined,
         },
         controller.signal,
       )
@@ -150,6 +190,39 @@ export function Home() {
           case 'tool_status':
             addThinkingStep(event.data)
             break
+          case 'route':
+            // 智能体路由事件 — 更新激活态
+            setActiveAgent(event.data)
+            break
+          case 'actions':
+            // 智能体操作建议 — 更新操作卡片
+            setAgentActions(event.data)
+            break
+          case 'need_input':
+            // DynamicAgent 追问：把问题作为一条 assistant 消息追加显示。
+            // 后端 data 形态可能为：
+            //   - string（已构造好的问题文案）
+            //   - string[]（缺失字段列表，如 ["destination", "date"]）
+            //   - { question: string; field?: string }（文档示例形态）
+            finishLastMessage()
+            clearThinkingSteps()
+            {
+              const d = event.data
+              let question = '请补充更多信息'
+              if (typeof d === 'string') {
+                question = d
+              } else if (Array.isArray(d) && d.length > 0) {
+                question = `请补充以下信息：${d.join('、')}`
+              } else if (d && typeof d === 'object' && typeof d.question === 'string') {
+                question = d.question
+              }
+              addMessage({
+                role: 'assistant',
+                content: `📋 ${question}`,
+                isStreaming: false,
+              })
+            }
+            break
         }
       }
     } catch (err) {
@@ -174,31 +247,42 @@ export function Home() {
     } finally {
       setLoading(false)
       abortRef.current = null
+      // 消息发送完成后刷新右侧会话列表，确保新会话/消息数更新
+      setSessionListRefresh((n) => n + 1)
     }
   }
 
+  const currentAgent = activeAgent ? agentMap[activeAgent] : undefined
+  const hasMessages = messages.length > 0
+
   return (
     <div className="h-screen flex bg-slate-50">
-      <SessionSidebar
-        onSessionChange={handleSessionChange}
-        activeSessionId={activeSessionId}
-      />
+      <NavSidebar />
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-shrink-0">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center shadow-sm">
-            <MapPin size={18} className="text-white" />
-          </div>
-          <div>
-            <h1
-              className="text-base font-semibold text-slate-800 leading-tight"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              Claw 旅行规划师
-            </h1>
-            <p className="text-xs text-slate-400">AI 规划 · 实时搜索 · 一键保存行程</p>
-          </div>
-        </header>
+        {/* 空对话时隐藏 header，让欢迎页更简洁（豆包风格） */}
+        {hasMessages && (
+          <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 flex-shrink-0">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-blue-500 flex items-center justify-center shadow-sm">
+              {currentAgent?.icon ? (
+                <span className="text-lg leading-none">{currentAgent.icon}</span>
+              ) : (
+                <Sparkles size={18} className="text-white" />
+              )}
+            </div>
+            <div>
+              <h1
+                className="text-base font-semibold text-slate-800 leading-tight"
+                style={{ fontFamily: 'var(--font-display)' }}
+              >
+                {currentAgent?.name ?? '云合 智能助手'}
+              </h1>
+              <p className="text-xs text-slate-400">
+                {currentAgent?.description ?? '通用智能体 · 多技能协作 · 自由对话'}
+              </p>
+            </div>
+          </header>
+        )}
 
         <ChatWindow
           messages={messages}
@@ -206,6 +290,7 @@ export function Home() {
           isEscalated={isEscalated}
           thinkingSteps={thinkingSteps}
           onQuickSend={handleSend}
+          currentAgentInfo={currentAgent}
         />
 
         <ChatInput
@@ -214,8 +299,17 @@ export function Home() {
           isEscalated={isEscalated}
           onClear={handleNewChat}
           onStop={handleStop}
+          agents={Object.values(agentMap)}
+          activeAgentId={activeAgent ?? null}
+          onAgentChange={(id) => setActiveAgent(id)}
         />
       </div>
+
+      <SessionSidebar
+        onSessionChange={handleSessionChange}
+        activeSessionId={activeSessionId}
+        refreshTrigger={sessionListRefresh}
+      />
     </div>
   )
 }

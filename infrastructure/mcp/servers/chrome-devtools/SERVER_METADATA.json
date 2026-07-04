@@ -1,0 +1,6 @@
+{
+  "serverIdentifier": "chrome-devtools",
+  "serverName": "Chrome DevTools",
+  "serverDescription": "浏览器自动化：截图、点击、表单填写、页面分析等",
+  "serverIcon": "🌐"
+}

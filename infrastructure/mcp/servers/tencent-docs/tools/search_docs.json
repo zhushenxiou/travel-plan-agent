@@ -1,0 +1,14 @@
+{
+  "name": "search_docs",
+  "description": "搜索腾讯文档",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "搜索关键词"
+      }
+    },
+    "required": ["query"]
+  }
+}

@@ -1,5 +1,5 @@
 """Tests for core/types.py — IntentType, DecisionType, ToolCall, Decision, TraceEvent"""
-from core.types import (
+from domain.shared.types import (
     IntentType,
     IntentResult,
     DecisionType,

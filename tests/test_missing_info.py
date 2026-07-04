@@ -2,10 +2,10 @@
 import pytest
 from unittest.mock import MagicMock
 
-from core.intent.travel_classifier import TravelIntentClassifier, TravelIntentResult
-from core.intent.travel_schema import TravelIntentType
-from core.memory import DualLayerMemoryManager, LongTermMemory, ShortTermMemory
-from infra.db import init_db, reset_connection, _json_dumps
+from domain.travel.intent.travel_classifier import TravelIntentClassifier, TravelIntentResult
+from domain.travel.intent.travel_schema import TravelIntentType
+from domain.memory.manager import DualLayerMemoryManager, LongTermMemory, ShortTermMemory
+from infrastructure.persistence.database import init_db, reset_connection, _json_dumps
 
 
 class TestExtractDestination:
@@ -134,13 +134,13 @@ class TestBuildMissingInfoContext:
         init_db(db_path)
 
     def _make_agent(self):
-        from core.agent import Agent
-        from core.llm import OpenAILLM
-        from core.prompting import PromptBuilder
-        from core.session import SessionManager
-        from tools.registry import ToolRegistry
-        from tools.executor import ToolExecutor
-        from tools.policy import ToolPolicy
+        from domain.travel.core import Agent
+        from infrastructure.llm.openai import OpenAILLM
+        from domain.travel.prompting import PromptBuilder
+        from domain.user.session.manager import SessionManager
+        from infrastructure.tools.registry import ToolRegistry
+        from infrastructure.tools.executor import ToolExecutor
+        from infrastructure.tools.policy import ToolPolicy
 
         llm = MagicMock(spec=OpenAILLM)
         registry = ToolRegistry()
@@ -198,7 +198,7 @@ class TestBuildMissingInfoContext:
         assert "推荐" in result
 
     def test_missing_info_with_user_preferences(self):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime
         conn = get_connection()
         now = datetime.utcnow().isoformat()
@@ -224,7 +224,7 @@ class TestBuildMissingInfoContext:
         assert "偏好" in result
 
     def test_missing_info_with_short_term_preferences(self):
-        from infra.db import get_connection
+        from infrastructure.persistence.database import get_connection
         from datetime import datetime
         conn = get_connection()
         now = datetime.utcnow().isoformat()
@@ -251,11 +251,11 @@ class TestBuildMissingInfoContext:
 
 class TestPromptingMissingInfoContext:
     def test_missing_info_context_in_prompt(self):
-        from core.prompting import PromptBuilder
-        from core.prompt_context import PromptContext
-        from core.contxt_manager import PreparedContext
-        from core.session import Session
-        from core.types import IntentResult, IntentType
+        from domain.travel.prompting import PromptBuilder
+        from domain.travel.prompt_context import PromptContext
+        from domain.travel.context_manager import PreparedContext
+        from domain.user.session.manager import Session
+        from domain.shared.types import IntentResult, IntentType
 
         session = Session(session_id="s1")
         prepared = PreparedContext(

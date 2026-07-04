@@ -6,6 +6,7 @@ export interface ChatRequest {
   session_id: string
   user_id?: string
   message: string
+  agent_id?: string
 }
 
 export interface ChatResponse {
@@ -59,9 +60,14 @@ export async function sendMessage(req: ChatRequest, signal?: AbortSignal): Promi
   return res.json()
 }
 
+export interface NeedInputData {
+  question: string
+  field?: string
+}
+
 export interface StreamEvent {
-  type: 'status' | 'chunk' | 'done' | 'error' | 'tool_status'
-  data: string
+  type: 'status' | 'chunk' | 'done' | 'error' | 'tool_status' | 'route' | 'actions' | 'need_input'
+  data: any
 }
 
 export async function* sendMessageStream(
@@ -195,9 +201,11 @@ export interface TrendingItem {
   tag: string
   summary: string
   content?: string
+  url?: string
   img?: string
   hotScore?: string
   hotChange?: string
+  source?: string
 }
 
 export async function getTrending(refresh: boolean = false): Promise<TrendingItem[]> {
@@ -210,6 +218,49 @@ export async function getTrending(refresh: boolean = false): Promise<TrendingIte
   } catch {
     return []
   }
+}
+
+export interface NewsFavorite {
+  id: number
+  title: string
+  summary: string
+  content: string
+  url: string
+  source: string
+  tag: string
+  created_at: string
+}
+
+export async function listNewsFavorites(): Promise<NewsFavorite[]> {
+  const res = await fetch(`${API_BASE}/news/favorites`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取收藏失败')
+  const data = await res.json()
+  return data.favorites || []
+}
+
+export async function addNewsFavorite(item: {
+  title: string
+  summary?: string
+  content?: string
+  url?: string
+  source?: string
+  tag?: string
+}): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/news/favorites`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(item),
+  })
+  if (!res.ok) throw new Error('收藏失败')
+  return res.json()
+}
+
+export async function deleteNewsFavorite(favoriteId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/news/favorites/${favoriteId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('取消收藏失败')
 }
 
 export async function getSessionMessages(sessionId: string): Promise<any[]> {
@@ -489,26 +540,6 @@ export async function createShareLink(itineraryId: string): Promise<{ token: str
   return res.json()
 }
 
-export async function listShareLinks(itineraryId: string): Promise<{ shares: { token: string; itinerary_id: string; view_count: number; created_at: string }[] }> {
-  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/shares`, {
-    headers: authHeaders(),
-  })
-  if (!res.ok) {
-    throw new Error('获取分享列表失败')
-  }
-  return res.json()
-}
-
-export async function deleteShareLink(itineraryId: string, token: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/shares/${token}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  })
-  if (!res.ok) {
-    throw new Error('删除分享链接失败')
-  }
-}
-
 export async function getSharedItinerary(token: string): Promise<{ itinerary: ItineraryData; share_info: { view_count: number; created_at: string } }> {
   const res = await fetch(`${API_BASE}/shared/${token}`)
   if (!res.ok) {
@@ -702,7 +733,7 @@ async function nominatimGeocode(address: string, city?: string): Promise<Geocode
     }
     const qs = new URLSearchParams(params).toString()
     const res = await fetch(`https://nominatim.openstreetmap.org/search?${qs}`, {
-      headers: { 'User-Agent': 'ClawTravelApp/1.0' },
+      headers: { 'User-Agent': 'YunheTravelApp/1.0' },
     })
     if (!res.ok) return null
     const data = await res.json()
@@ -806,4 +837,282 @@ export async function batchGeocode(addresses: string[]): Promise<GeocodeResult[]
     })
   )
   return results
+}
+
+// ==================== 相册管理 ====================
+
+export interface PhotoData {
+  id: number
+  itinerary_id: string
+  user_id: string
+  file_name: string
+  file_size: number
+  mime_type: string
+  description: string
+  storage_path: string
+  thumbnail_path: string
+  day_index: number
+  tags: string[]
+  ai_description: string
+  latitude: number | null
+  longitude: number | null
+  is_cover: boolean
+  created_at: string
+}
+
+export interface PhotoListResponse {
+  itinerary_id: string
+  photos: PhotoData[]
+  total: number
+  tags: string[]
+  cover: PhotoData | null
+}
+
+export interface PhotoMapMarker {
+  photo_id: number
+  latitude: number
+  longitude: number
+  description: string
+  day_index: number
+  thumbnail_path: string
+}
+
+export async function uploadPhotos(
+  itineraryId: string,
+  files: File[],
+  description: string = '',
+  dayIndex: number = 0,
+): Promise<{ photos: PhotoData[] }> {
+  const formData = new FormData()
+  for (const f of files) {
+    formData.append('files', f)
+  }
+  formData.append('description', description)
+  formData.append('day_index', String(dayIndex))
+
+  const token = getToken()
+  const headers: HeadersInit = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/photos`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+  if (!res.ok) throw new Error(`上传失败 (${res.status})`)
+  return res.json()
+}
+
+export async function listPhotos(
+  itineraryId: string,
+  dayIndex?: number,
+  tag?: string,
+): Promise<PhotoListResponse> {
+  const params = new URLSearchParams()
+  if (dayIndex && dayIndex > 0) params.set('day_index', String(dayIndex))
+  if (tag) params.set('tag', tag)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/photos${qs}`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`获取照片失败 (${res.status})`)
+  return res.json()
+}
+
+export async function deletePhoto(itineraryId: string, photoId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/photos/${photoId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`删除失败 (${res.status})`)
+}
+
+export async function updatePhoto(
+  itineraryId: string,
+  photoId: number,
+  data: { description?: string; day_index?: number; tags?: string[] },
+): Promise<PhotoData> {
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/photos/${photoId}`, {
+    method: 'PATCH',
+    headers: authHeaders(),
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error(`更新失败 (${res.status})`)
+  return res.json()
+}
+
+export async function setPhotoCover(itineraryId: string, photoId: number): Promise<PhotoData> {
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/photos/${photoId}/cover`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`设置封面失败 (${res.status})`)
+  return res.json()
+}
+
+export async function getPhotoMapMarkers(itineraryId: string): Promise<{ itinerary_id: string; markers: PhotoMapMarker[] }> {
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/photos/map`, {
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`获取地图标记失败 (${res.status})`)
+  return res.json()
+}
+
+export async function generateTravelogue(itineraryId: string): Promise<{ itinerary_id: string; content: string }> {
+  const res = await fetch(`${API_BASE}/itineraries/${itineraryId}/travelogue`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error(`生成游记失败 (${res.status})`)
+  return res.json()
+}
+
+export function getAlbumImageUrl(path: string): string {
+  const token = getToken()
+  // 兼容旧数据：如果 path 以 album/ 开头，去掉前缀（路由已包含 /album/）
+  const cleanPath = path.startsWith('album/') ? path.slice(6) : path
+  const base = `${API_BASE}/album/${cleanPath}`
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base
+}
+
+// ===== Agent 中心 API =====
+
+// 类型定义（字段与后端 AgentConfig 完全对齐）
+export interface SkillInfo {
+  name: string
+  display_name: string
+  description: string
+  default_prompt: string
+  requires_env: string[]
+  env_configured: boolean
+  icon: string
+  tools?: string[]
+  category?: string
+}
+
+export interface AgentInfo {
+  id: string
+  name: string
+  description: string
+  icon: string
+  source: 'builtin' | 'custom'    // 与后端 AgentConfig.source 对齐
+  skills?: string[]
+  mcp_servers?: string[]
+  is_public?: boolean
+  status?: string                 // Phase 4: draft / published
+  created_at?: string
+  system_prompt?: string
+  welcome_message?: string
+  temperature?: number
+  user_id?: string
+}
+
+export interface MCPToolInfo {
+  name: string
+  description: string
+  proxy_name: string
+  input_schema: any
+  adapter_available: boolean
+}
+
+export interface MCPServerInfo {
+  identifier: string
+  name: string
+  description: string
+  instructions: string
+  tools: MCPToolInfo[]
+}
+
+// 获取 skill 列表
+export async function fetchSkills(): Promise<SkillInfo[]> {
+  const res = await fetch(`${API_BASE}/skills`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 Skill 列表失败')
+  const data = await res.json()
+  return data.skills
+}
+
+// 获取单个 skill 详情
+export async function fetchSkillDetail(name: string): Promise<SkillInfo> {
+  const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(name)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 Skill 详情失败')
+  return res.json()
+}
+
+// 获取 MCP Server 列表
+export async function fetchMCPServers(): Promise<MCPServerInfo[]> {
+  const res = await fetch(`${API_BASE}/mcp/servers`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 MCP 列表失败')
+  const data = await res.json()
+  return data.servers
+}
+
+// 获取单个 MCP Server 详情
+export async function fetchMCPServer(serverId: string): Promise<MCPServerInfo> {
+  const res = await fetch(`${API_BASE}/mcp/servers/${encodeURIComponent(serverId)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取 MCP 详情失败')
+  return res.json()
+}
+
+// 获取智能体列表
+export async function fetchAgents(): Promise<{
+  builtin: AgentInfo[]
+  custom: AgentInfo[]
+  public: AgentInfo[]
+}> {
+  const res = await fetch(`${API_BASE}/agents`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('获取智能体列表失败')
+  return res.json()
+}
+
+// 创建自定义智能体
+export async function createCustomAgent(data: Partial<AgentInfo>): Promise<AgentInfo> {
+  const res = await fetch(`${API_BASE}/agents/custom`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '创建智能体失败')
+  }
+  return res.json()
+}
+
+// 更新自定义智能体
+export async function updateCustomAgent(agentId: string, data: Partial<AgentInfo>): Promise<AgentInfo> {
+  const res = await fetch(`${API_BASE}/agents/custom/${agentId}`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '更新智能体失败')
+  }
+  return res.json()
+}
+
+// 删除自定义智能体
+export async function deleteCustomAgent(agentId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/agents/custom/${agentId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '删除智能体失败')
+  }
+}
+
+// 克隆社区智能体
+export async function cloneCustomAgent(agentId: string): Promise<AgentInfo> {
+  const res = await fetch(`${API_BASE}/agents/custom/${agentId}/clone`, {
+    method: 'POST',
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '克隆智能体失败')
+  }
+  return res.json()
 }

@@ -1,0 +1,19 @@
+{
+  "name": "screenshot",
+  "description": "对当前页面截图",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "要截图的页面 URL"
+      },
+      "fullPage": {
+        "type": "boolean",
+        "description": "是否全页截图",
+        "default": false
+      }
+    },
+    "required": ["url"]
+  }
+}

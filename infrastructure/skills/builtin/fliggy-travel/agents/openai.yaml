@@ -1,0 +1,17 @@
+interface:
+  display_name: "FlyAI Travel"
+  short_description: "Search flights, hotels, attractions, and travel deals via Fliggy"
+  default_prompt: "Use $fliggy-travel to search and book travel services"
+  tools:
+    - fliggy_search_flight
+    - fliggy_search_train
+    - fliggy_search_hotel
+    - fliggy_keyword_search
+    - fliggy_ai_search
+  category: "travel"
+
+i18n:
+  zh:
+    name: "飞猪旅行搜索"
+    description: "通过 FlyAI 搜索机票、酒店、门票、火车票等全品类旅行服务，支持自然语言查询与实时预订。"
+
